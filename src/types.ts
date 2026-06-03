@@ -8,6 +8,14 @@ export interface WorkflowMeta {
   phases?: Array<{ title: string }>;
 }
 
+export interface WorkflowRunStats {
+  files: number;
+  candidates: number;
+  verified: number;
+  kept: number;
+  [key: string]: string | number;
+}
+
 /** Options for a single `agent()` call. */
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 

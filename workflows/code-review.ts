@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { Type } from "typebox";
-import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
+import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "code-review",
@@ -41,6 +41,8 @@ const ReportSchema = Type.Object({
       severity: Type.Union([Type.Literal("bug"), Type.Literal("cleanup")]),
       verdict: Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE")]),
       summary: Type.String(),
+      evidence: Type.Optional(Type.String()),
+      failure_scenario: Type.Optional(Type.String()),
     }),
   ),
 });
@@ -113,8 +115,18 @@ export function inDiff(changed: Map<string, Set<number>>, file: string, line?: n
 }
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, pipeline, phase, log, args, cwd } = api;
+  const { agent, parallel, pipeline, phase, log, progress, args, cwd } = api;
   const target = args.trim();
+  let fileCount = 0;
+  let rawCandidateCount = 0;
+  let droppedCandidateCount = 0;
+  const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
+    files: fileCount,
+    candidates: rawCandidateCount,
+    verified,
+    kept,
+    dropped: droppedCandidateCount,
+  });
 
   // ─── Phase 0: Scope ───
   phase("Scope");
@@ -137,8 +149,17 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
-  if (!scope || scope.files.length === 0) {
-    return { summary: "No changes found to review.", findings: [], stats: { candidates: 0, verified: 0 } };
+  if (!scope) {
+    return { summary: "No changes found to review.", findings: [], stats: makeStats(0, 0) };
+  }
+
+  fileCount = scope.files.length;
+  progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
+  progress({ type: "summary", key: "diffCommand", value: scope.diffCommand });
+  progress({ type: "counter", key: "files", label: "files", value: fileCount });
+
+  if (scope.files.length === 0) {
+    return { summary: "No changes found to review.", findings: [], stats: makeStats(0, 0) };
   }
   log(`${scope.files.length} changed files`);
 
@@ -192,10 +213,27 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
         { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, thinkingLevel: "low", schema: CandidatesSchema },
       );
       const raw = (found?.candidates ?? []).slice(0, PER_ANGLE);
+      rawCandidateCount += raw.length;
+      progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
       const gate = changed;
       const bounded = gate ? raw.filter((candidate) => inDiff(gate, candidate.file, candidate.line)) : raw;
-      if (gate && raw.length - bounded.length > 0) {
-        log(`find:${angle.label}: dropped ${raw.length - bounded.length} out-of-diff candidate(s)`);
+      const dropped = raw.length - bounded.length;
+      if (dropped > 0) {
+        droppedCandidateCount += dropped;
+        progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
+      }
+      if (gate && dropped > 0) {
+        log(`find:${angle.label}: dropped ${dropped} out-of-diff candidate(s)`);
+      }
+      for (const candidate of bounded) {
+        progress({
+          type: "lane_item",
+          lane: "Candidates",
+          title: candidate.summary,
+          subtitle: formatLocation(candidate),
+          status: "pending",
+          details: candidate.failure_scenario,
+        });
       }
       return { angle, candidates: bounded };
     },
@@ -218,7 +256,17 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
               "with evidence quoting the line(s). Default toward REFUTED if you cannot substantiate it. Structured output only.",
             { phase: "Verify", label: `verify:${candidate.file.split("/").pop() ?? candidate.file}`, tools: TOOLS, thinkingLevel: "low", schema: VerdictSchema },
           );
-          return judged ? { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind } : null;
+          if (!judged) return null;
+          progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
+          progress({
+            type: "lane_item",
+            lane: verdictLane(judged.verdict),
+            title: candidate.summary,
+            subtitle: formatLocation(candidate),
+            status: verdictStatus(judged.verdict),
+            details: judged.evidence,
+          });
+          return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
         }),
       );
       return verdicts.filter((value): value is Verified => value !== null);
@@ -227,10 +275,15 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   const verified = (perAngle as Verified[][]).flat();
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
+  const stats = makeStats(verified.length, surviving.length);
+  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
+  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
+  progress({ type: "summary", key: "verified", value: verified.length });
+  progress({ type: "summary", key: "kept", value: surviving.length });
   log(`${verified.length} verified → ${surviving.length} kept`);
 
   if (surviving.length === 0) {
-    return { summary: "No findings survived verification.", findings: [], stats: { candidates: seen.size, verified: verified.length } };
+    return { summary: "No findings survived verification.", findings: [], stats };
   }
 
   // ─── Synthesize: rank, merge, report ───
@@ -247,9 +300,49 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   const report = await agent(
     `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
-      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final report. Structured output only.",
+      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final report. Include evidence and failure_scenario for each finding when available. Structured output only.",
     { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: ReportSchema },
   );
 
-  return report ?? { summary: "Synthesis produced no output.", findings: [] };
+  if (!report) return { summary: "Synthesis produced no output.", findings: [], stats };
+
+  const findings = report.findings.map((finding) => {
+    const source = ranked.find((candidate) => sameFinding(candidate, finding));
+    return {
+      ...finding,
+      evidence: finding.evidence ?? source?.evidence,
+      failure_scenario: finding.failure_scenario ?? source?.failure_scenario,
+    };
+  });
+  return { ...report, findings, stats };
+}
+
+function formatLocation(candidate: Pick<Candidate, "file" | "line">): string {
+  return `${candidate.file}${candidate.line != null ? `:${candidate.line}` : ""}`;
+}
+
+function verdictLane(verdict: Verified["verdict"]): string {
+  switch (verdict) {
+    case "CONFIRMED":
+      return "Confirmed";
+    case "PLAUSIBLE":
+      return "Plausible";
+    case "REFUTED":
+      return "Refuted";
+  }
+}
+
+function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "error" {
+  switch (verdict) {
+    case "CONFIRMED":
+      return "success";
+    case "PLAUSIBLE":
+      return "warning";
+    case "REFUTED":
+      return "error";
+  }
+}
+
+function sameFinding(candidate: Verified, finding: { file: string; line?: number; summary: string }): boolean {
+  return normalizePath(candidate.file) === normalizePath(finding.file) && candidate.line === finding.line;
 }
