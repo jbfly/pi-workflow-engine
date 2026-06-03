@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { Type } from "typebox";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
@@ -72,9 +73,47 @@ const ANGLES: Angle[] = [
 
 const TOOLS = ["read", "bash"];
 const PER_ANGLE = 6;
+const DIFF_EMBED_CAP = 60_000;
+
+/** Strip leading "./", "a/", "b/" so diff paths and finder-reported paths compare equal. */
+export function normalizePath(path: string): string {
+  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
+}
+
+/** Parse a unified diff into the set of added/changed new-file line numbers per file. */
+export function changedLines(diff: string): Map<string, Set<number>> {
+  const byFile = new Map<string, Set<number>>();
+  let file: string | null = null;
+  let newLine = 0;
+  for (const raw of diff.split("\n")) {
+    if (raw.startsWith("+++ ")) {
+      const path = raw.slice(4).trim();
+      file = path === "/dev/null" ? null : normalizePath(path);
+      if (file && !byFile.has(file)) byFile.set(file, new Set());
+    } else if (raw.startsWith("@@")) {
+      const match = /\+(\d+)/.exec(raw);
+      newLine = match ? Number(match[1]) : 0;
+    } else if (file === null || raw.startsWith("---") || raw.startsWith("\\")) {
+      // file header, deletion, or "No newline" marker — record nothing
+    } else if (raw.startsWith("+")) {
+      byFile.get(file)!.add(newLine++);
+    } else if (!raw.startsWith("-")) {
+      newLine++; // context line advances the new-file counter; deletions do not
+    }
+  }
+  return byFile;
+}
+
+/** Is a finding inside the diff? File-level findings count if the file changed; ±1 line of fuzz. */
+export function inDiff(changed: Map<string, Set<number>>, file: string, line?: number): boolean {
+  const set = changed.get(normalizePath(file));
+  if (!set) return false;
+  if (line == null) return true;
+  return set.has(line) || set.has(line - 1) || set.has(line + 1);
+}
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, pipeline, phase, log, args } = api;
+  const { agent, parallel, pipeline, phase, log, args, cwd } = api;
   const target = args.trim();
 
   // ─── Phase 0: Scope ───
@@ -103,9 +142,32 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   }
   log(`${scope.files.length} changed files`);
 
+  // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
+  let changed: Map<string, Set<number>> | null = null;
+  let diffText = "";
+  if (/^(git diff|gh pr diff)\b/.test(scope.diffCommand)) {
+    try {
+      diffText = execSync(scope.diffCommand, { cwd, encoding: "utf8", maxBuffer: 16 << 20 });
+      changed = changedLines(diffText);
+    } catch (error) {
+      log(`diff capture failed (${error instanceof Error ? error.message : String(error)}) — reviewing without the line gate`);
+    }
+  } else {
+    log("diffCommand not in the git/gh allowlist — reviewing without the line gate");
+  }
+
+  const diffBlock = diffText
+    ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
+        diffText.length > DIFF_EMBED_CAP
+          ? `${diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${scope.diffCommand}\` for the full diff)`
+          : diffText
+      }\n\`\`\`\n`
+    : "";
+
   const scopeBlock =
     `## Diff command\n${scope.diffCommand}\n\n## Changed files\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
+    diffBlock +
     (target ? `\n## User instructions (verbatim)\n${target}\n` : "");
 
   // Dedup state accumulates as finders complete (the pipeline has no barrier).
@@ -122,12 +184,20 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       const angle = item as Angle;
       const found = await agent(
         `## Code-review finder — ${angle.label}\n\n${scopeBlock}\n` +
-          `Run the diff command and review ONLY through this lens:\n${angle.text}\n` +
-          `Surface up to ${PER_ANGLE} candidates, each with file, line, a one-line summary, and a concrete failure_scenario. ` +
+          `Review the change through ONLY this lens:\n${angle.text}\n` +
+          "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
+          "You may read surrounding files for context, but never report issues in unchanged code. " +
+          `Surface up to ${PER_ANGLE} candidates, each with file, a line that appears in the diff, a one-line summary, and a concrete failure_scenario. ` +
           "Pass through anything with a nameable failure scenario — a separate verifier judges them next. Structured output only.",
         { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, thinkingLevel: "low", schema: CandidatesSchema },
       );
-      return { angle, candidates: (found?.candidates ?? []).slice(0, PER_ANGLE) };
+      const raw = (found?.candidates ?? []).slice(0, PER_ANGLE);
+      const gate = changed;
+      const bounded = gate ? raw.filter((candidate) => inDiff(gate, candidate.file, candidate.line)) : raw;
+      if (gate && raw.length - bounded.length > 0) {
+        log(`find:${angle.label}: dropped ${raw.length - bounded.length} out-of-diff candidate(s)`);
+      }
+      return { angle, candidates: bounded };
     },
     // Stage 2: dedup against the shared set, then verify survivors concurrently.
     async (prev) => {

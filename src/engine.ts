@@ -32,6 +32,7 @@ export async function runWorkflow(ctx: ExtensionContext, mod: WorkflowModule, ar
     phase: (title) => progress.phase(title),
     log: (message) => progress.log(message),
     args,
+    cwd: ctx.cwd,
     signal: ctx.signal,
   };
 

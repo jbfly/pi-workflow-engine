@@ -46,6 +46,8 @@ export interface WorkflowApi {
   log(message: string): void;
   /** Raw argument string passed after the workflow name. */
   args: string;
+  /** Working directory of the host session (typically the repo root). */
+  cwd: string;
   /** Abort signal for the run, propagated from the host. */
   signal: AbortSignal | undefined;
 }
