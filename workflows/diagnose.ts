@@ -1,5 +1,14 @@
 import { Type } from "typebox";
-import { AdvisoryCandidatesSchema, type AdvisoryCandidate, type AdvisoryReport } from "../src/advisory-schema.ts";
+import {
+  AdvisoryCandidatesSchema,
+  AdvisoryReportSchema,
+  AdvisoryVerdictSchema,
+  type AdvisoryCandidate,
+  type AdvisoryFinding,
+  type AdvisoryLocation,
+  type AdvisoryReport,
+  type AdvisoryVerdict,
+} from "../src/advisory-schema.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -22,6 +31,18 @@ interface HypothesisLens {
   text: string;
 }
 
+type Candidate = AdvisoryCandidate;
+
+interface Hypothesis extends Candidate {
+  lens: HypothesisLens;
+}
+
+interface Verified extends Hypothesis {
+  verdict: AdvisoryVerdict["verdict"];
+  evidence: string[];
+  confidence?: AdvisoryVerdict["confidence"];
+}
+
 const HYPOTHESIS_LENSES: HypothesisLens[] = [
   { label: "recent-change", category: "regression", text: "A recent code change broke a previously working path or changed an implicit contract." },
   { label: "control-flow", category: "root-cause", text: "Incorrect branching, ordering, async flow, data flow, or state transition causes the symptom." },
@@ -33,18 +54,20 @@ const HYPOTHESIS_LENSES: HypothesisLens[] = [
 const TOOLS = ["read", "bash"];
 const PER_LENS = 4;
 
-type Candidate = AdvisoryCandidate;
-
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, parallel, phase, log, progress, args } = api;
   const symptom = args.trim();
   let fileCount = 0;
-  let candidateCount = 0;
+  let rawCandidateCount = 0;
+  let droppedCandidateCount = 0;
+  let refutedCandidateCount = 0;
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
-    candidates: candidateCount,
+    candidates: rawCandidateCount,
     verified,
     kept,
+    dropped: droppedCandidateCount,
+    refuted: refutedCandidateCount,
   });
 
   phase("Scope");
@@ -81,7 +104,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   phase("Hypothesize");
   const perLens = await parallel(
-    HYPOTHESIS_LENSES.map((lens) => async (): Promise<Candidate[]> => {
+    HYPOTHESIS_LENSES.map((lens) => async (): Promise<Hypothesis[]> => {
       const found = await agent(
         `## Diagnose hypothesis generator — ${lens.label}\n\n${scopeBlock}\n` +
           "This workflow is advisory-only: diagnose and recommend validation/fix plans, but do not edit files.\n" +
@@ -90,8 +113,8 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           "Each hypothesis must include a one-line summary, locations, impact explaining how it produces the symptom, and an optional recommendation for the next validation step. Structured output only.",
         { phase: "Hypothesize", label: `hypothesize:${lens.label}`, tools: TOOLS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
       );
-      const candidates = (found?.candidates ?? []).slice(0, PER_LENS);
-      candidateCount += candidates.length;
+      const candidates = (found?.candidates ?? []).slice(0, PER_LENS).map((candidate) => ({ ...candidate, lens }));
+      rawCandidateCount += candidates.length;
       progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: candidates.length });
       for (const candidate of candidates) {
         progress({
@@ -107,22 +130,176 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     }),
   );
 
-  const hypotheses = perLens.flat();
-  return emptyReport(
-    `Diagnosis generated ${hypotheses.length} hypothesis/hypotheses; verification and synthesis are not implemented yet.`,
-    ["Complete the planned verification and synthesis stages before using this workflow for final diagnosis."],
-    makeStats(0, 0),
+  const hypotheses = dedupe(perLens.flat(), (dropped) => {
+    droppedCandidateCount += dropped;
+    progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
+  });
+
+  phase("Verify");
+  const verified = (
+    await parallel(
+      hypotheses.map((hypothesis) => async (): Promise<Verified | null> => {
+        const location = primaryLocation(hypothesis);
+        const judged = await agent(
+          `## Diagnose verifier\n\n${scopeBlock}\n## Hypothesis\n` +
+            `Location: ${formatLocation(hypothesis)}\nCategory: ${hypothesis.category}\nSummary: ${hypothesis.summary}\nImpact: ${hypothesis.impact}\n` +
+            `Recommended validation: ${hypothesis.recommendation ?? "(none supplied)"}\n\n` +
+            "Read relevant files and, when useful, run only safe read-only diagnostic commands from the scoped command list or commands explicitly requested by the user. " +
+            "Do not run mutation, install, commit, network, or destructive commands. Return CONFIRMED, PLAUSIBLE, or REFUTED with evidence. " +
+            "Default toward REFUTED if evidence does not connect the hypothesis to the symptom. Structured output only.",
+          {
+            phase: "Verify",
+            label: `verify:${location.file.split("/").pop() ?? location.file}`,
+            tools: TOOLS,
+            thinkingLevel: "low",
+            schema: AdvisoryVerdictSchema,
+          },
+        );
+        if (!judged) return null;
+        progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
+        if (judged.verdict === "REFUTED") {
+          refutedCandidateCount += 1;
+          progress({ type: "counter_delta", key: "refuted", label: "refuted", delta: 1 });
+        }
+        progress({
+          type: "lane_item",
+          lane: verdictLane(judged.verdict),
+          title: hypothesis.summary,
+          subtitle: formatLocation(hypothesis),
+          status: verdictStatus(judged.verdict),
+          details: formatEvidence(judged.evidence),
+        });
+        return { ...hypothesis, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
+      }),
+    )
+  ).filter((value): value is Verified => value !== null);
+
+  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
+  const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
+  const stats = makeStats(verified.length, surviving.length);
+  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
+  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
+  progress({ type: "summary", key: "verified", value: verified.length });
+  progress({ type: "summary", key: "kept", value: surviving.length });
+  log(`${verified.length} verified → ${surviving.length} kept`);
+
+  if (surviving.length === 0) {
+    return emptyReport(
+      "No root-cause hypothesis survived verification.",
+      ["Capture the exact failing command and error output.", "Rerun diagnose with a narrower symptom or more evidence."],
+      stats,
+    );
+  }
+
+  phase("Synthesize");
+  const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
+  const block = ranked
+    .map(
+      (finding, index) =>
+        `### [${index}] ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nValidation/fix plan: ${finding.recommendation ?? "(none supplied)"}`,
+    )
+    .join("\n\n");
+  const refutedBlock = refuted
+    .slice(0, 8)
+    .map((finding) => `- ${finding.summary} — REFUTED because ${formatEvidence(finding.evidence)}`)
+    .join("\n");
+
+  const report = await agent(
+    `## Synthesis: final diagnosis report\n\n${ranked.length} hypotheses survived independent verification.\n\n${block}\n\n` +
+      `## Refuted hypotheses for context\n${refutedBlock || "(none recorded)"}\n\n` +
+      "Produce the shared advisory report shape. Only include confirmed or plausible root causes in findings. " +
+      "Use categories such as root-cause, regression, configuration, dependency, or test-fixture. " +
+      "Recommendation must be a validation/fix plan, not a patch. nextSteps must be the minimum commands or code inspections needed to confirm the top diagnosis. Structured output only.",
+    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
   );
+
+  if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun diagnose with a narrower symptom."], stats);
+
+  const findings = report.findings.map((finding) => {
+    const source = ranked.find((candidate) => sameFinding(candidate, finding));
+    return {
+      ...finding,
+      evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
+      impact: finding.impact || source?.impact || "Impact not restated by synthesis.",
+      recommendation: finding.recommendation || source?.recommendation || "Validate this diagnosis with the smallest safe reproduction command.",
+    };
+  });
+  return { ...report, findings, stats };
 }
 
 function emptyReport(summary: string, nextSteps: string[], stats: WorkflowRunStats): AdvisoryReport & { stats: WorkflowRunStats } {
   return { summary, findings: [], nextSteps, stats };
 }
 
+function dedupe(candidates: Hypothesis[], onDropped: (dropped: number) => void): Hypothesis[] {
+  const seen = new Set<string>();
+  const novel: Hypothesis[] = [];
+  for (const candidate of candidates) {
+    const key = dedupKey(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    novel.push(candidate);
+  }
+  const dropped = candidates.length - novel.length;
+  if (dropped > 0) onDropped(dropped);
+  return novel;
+}
+
+function dedupKey(candidate: Candidate): string {
+  const location = primaryLocation(candidate);
+  const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : "file";
+  return `${candidate.category}:${normalizePath(location.file)}:${lineKey}:${candidate.summary.slice(0, 60).toLowerCase()}`;
+}
+
+function primaryLocation(candidate: Pick<Candidate, "locations">): AdvisoryLocation {
+  return candidate.locations[0] ?? { file: "" };
+}
+
 function formatLocation(candidate: Pick<Candidate, "locations">): string {
-  const location = candidate.locations[0];
-  if (!location) return "(no location)";
+  const location = primaryLocation(candidate);
   const line = location.line != null ? `:${location.line}` : "";
   const symbol = location.symbol ? ` (${location.symbol})` : "";
   return `${location.file}${line}${symbol}`;
+}
+
+function formatEvidence(evidence: string[]): string {
+  return evidence.join("; ");
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
+}
+
+function rank(finding: Verified): number {
+  if (finding.verdict === "CONFIRMED") return 0;
+  return 1;
+}
+
+function verdictLane(verdict: Verified["verdict"]): string {
+  switch (verdict) {
+    case "CONFIRMED":
+      return "Confirmed";
+    case "PLAUSIBLE":
+      return "Plausible";
+    case "REFUTED":
+      return "Refuted";
+  }
+}
+
+function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "error" {
+  switch (verdict) {
+    case "CONFIRMED":
+      return "success";
+    case "PLAUSIBLE":
+      return "warning";
+    case "REFUTED":
+      return "error";
+  }
+}
+
+function sameFinding(candidate: Verified, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
+  const candidateLocation = primaryLocation(candidate);
+  const findingLocation = primaryLocation(finding);
+  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
 }
