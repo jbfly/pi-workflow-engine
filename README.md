@@ -12,6 +12,12 @@ A customisable multi-agent workflow-orchestration engine for the [pi](https://pi
 pi install git:github.com/timbrinded/pi-workflow-engine
 ```
 
+Or from npm:
+
+```bash
+pi install npm:pi-workflow-engine
+```
+
 That's all — pi fetches the package and serves its dependencies from its own bundle, so there's no clone, install, or build step. Restart pi (or run `/reload` in an open session), then confirm it's registered:
 
 ```bash
