@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
-import { isCodeReviewResult, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";
+import { isAdvisoryReport, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";
 
 type ThemeBg = Parameters<Theme["bg"]>[0];
 
@@ -83,29 +83,38 @@ const validReport = {
   summary: "Review complete.",
   findings: [
     {
-      file: "src/app.ts",
-      line: 10,
-      severity: "bug",
-      verdict: "CONFIRMED",
       summary: "Off-by-one in retry loop.",
-      evidence: "line 10 increments before checking the limit",
-      failure_scenario: "A final retry is skipped.",
+      category: "bug",
+      severity: "high",
+      confidence: "high",
+      locations: [{ file: "src/app.ts", line: 10, symbol: "retry" }],
+      evidence: ["line 10 increments before checking the limit"],
+      impact: "A final retry is skipped.",
+      recommendation: "Change the loop boundary after adding a regression test.",
     },
   ],
+  nextSteps: ["Inspect src/app.ts retry loop", "Add a retry-boundary regression test"],
   stats: { files: 2, candidates: 3, verified: 1, kept: 1 },
 };
 
-assert.equal(isCodeReviewResult(validReport), true);
-assert.equal(isCodeReviewResult({ summary: "bad", findings: [{ file: 123, summary: "x" }] }), false);
-assert.equal(isCodeReviewResult({ summary: "generic workflow", value: 42 }), false);
+assert.equal(isAdvisoryReport(validReport), true);
+assert.equal(isAdvisoryReport({ summary: "bad", findings: [{ file: 123, summary: "x" }], nextSteps: [] }), false);
+assert.equal(isAdvisoryReport({ summary: "generic workflow", value: 42 }), false);
 
-const collapsed = renderWorkflowResultText("code-review", validReport, false, theme);
-assert.match(collapsed, /Workflow: code-review/);
+const collapsed = renderWorkflowResultText("refactor-scout", validReport, false, theme);
+assert.match(collapsed, /Workflow: refactor-scout/);
 assert.match(collapsed, /Review complete/);
 assert.match(collapsed, /files 2/);
-assert.match(collapsed, /src\/app\.ts/);
+assert.match(collapsed, /\[bug\]/);
+assert.match(collapsed, /\[high\]/);
+assert.match(collapsed, /\[high confidence\]/);
+assert.match(collapsed, /src\/app\.ts:10 \(retry\)/);
 
-const expanded = renderWorkflowResultText("code-review", validReport, true, theme);
+const expanded = renderWorkflowResultText("refactor-scout", validReport, true, theme);
+assert.match(expanded, /Impact: A final retry is skipped/);
 assert.match(expanded, /Evidence: line 10 increments before checking the limit/);
+assert.match(expanded, /Recommendation: Change the loop boundary/);
+assert.match(expanded, /Next steps:/);
+assert.match(expanded, /Inspect src\/app\.ts retry loop/);
 
 console.log("workflow UI tests passed");
