@@ -2,19 +2,19 @@
 
 # pi-workflow-engine
 
-Claude Code style dynamic workflows for the [pi](https://pi.dev) coding agent.
+Claude Code style workflows for the [pi](https://pi.dev) coding agent.
 
 This is not just a way to run a prompt. It is a way to turn an agentic procedure into code: scope the task, fork isolated subagents, fan out across review lenses, validate every handoff with schemas, verify candidate findings, and synthesize one ranked result.
 
-The built-in example is a customisable `/workflow code-review`: your own version of Claude Code's built-in `/code-review`, built on pi's SDK and editable like normal TypeScript.
+The built-in workflows are advisory: they inspect, fan out, verify, and report. They do not edit files. Start with `/workflow code-review`, or use the focused scouts for refactors, diagnosis, and performance.
 
 ## Why workflows matter
 
-Claude Code popularised a useful pattern: the best agentic coding work is not a single chat turn. It is a loop of context gathering, delegated action, verification, and synthesis. Its docs describe the [agentic loop](https://code.claude.com/docs/en/glossary#agentic-loop), [skills and commands](https://code.claude.com/docs/en/skills), [subagents](https://code.claude.com/docs/en/glossary#subagent), and newer [dynamic workflows](https://code.claude.com/docs/en/agent-sdk/subagents#scale-up-with-dynamic-workflows) as composable building blocks for repeatable engineering work.
+Claude Code popularised a useful pattern: the best agentic coding work is not a single chat turn. It is a loop of context gathering, delegated action, verification, and synthesis. Its docs describe the [agentic loop](https://code.claude.com/docs/en/glossary#agentic-loop), [skills and commands](https://code.claude.com/docs/en/skills), and [subagents](https://code.claude.com/docs/en/glossary#subagent) as composable building blocks for repeatable engineering work.
 
-`pi-workflow-engine` brings that shape to pi:
+`pi-workflow-engine` brings that shape to pi with static TypeScript workflows:
 
-- **Procedures, not prompts**: write the workflow once, then invoke it as `/workflow code-review` or let the host agent call the `workflow` tool.
+- **Procedures, not prompts**: write the workflow once, then invoke it with `/workflow` or let the host agent call the `workflow` tool.
 - **Isolated subagents**: each `agent()` runs in its own in-memory pi session, so exploratory work does not pollute the main conversation.
 - **Parallel cognition**: run many focused agents at once, with a shared concurrency cap so large workflows stay bounded.
 - **Typed handoffs**: pass structured data between stages using typebox schemas instead of asking the model to emit parseable prose.
@@ -73,33 +73,15 @@ The host agent can also invoke the `workflow` tool mid-conversation:
 Run the code-review workflow on this PR and use the result before deciding what to fix.
 ```
 
-The advisory workflows inspect and report only; they do not edit files. They return a shared verified, ranked report shape:
+The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
 
-```json
-{
-  "summary": "1 high-confidence bug finding in sum.js ...",
-  "findings": [
-    {
-      "summary": "Off-by-one in the loop boundary reads past the end of the array.",
-      "category": "bug",
-      "severity": "high",
-      "confidence": "high",
-      "locations": [{ "file": "sum.js", "line": 3, "symbol": "sum" }],
-      "evidence": ["line 3 uses `i <= arr.length`, so the final iteration reads `arr[arr.length]`"],
-      "impact": "The extra read produces `undefined`, causing numeric sums to become `NaN`.",
-      "recommendation": "Change the loop bound after adding a regression test for a non-empty array."
-    }
-  ],
-  "nextSteps": ["Add a regression test for summing [1, 2, 3].", "Change the loop condition to `i < arr.length`."]
-}
-```
+## Built-in workflows
 
-## Built-in advisory workflows
-
-- `code-review`: reviews the current branch, open PR, ref range, or target through correctness and cleanup lenses.
-- `refactor-scout`: finds safe, evidence-backed refactor opportunities without rewriting code.
-- `diagnose`: investigates a bug, failing command, or regression using competing root-cause hypotheses.
-- `perf-review`: surfaces bottleneck hypotheses, measurement gaps, and safe optimization directions.
+- `code-review`: Reviews the current branch, open PR, ref range, or target. It looks for correctness bugs and cleanup issues, then independently verifies candidates before ranking them.
+- `refactor-scout`: Looks for small, safe refactor opportunities: duplication, complexity, weak types, boundary leaks, dead code, and convention drift.
+- `diagnose`: Investigates a symptom, failing command, or regression. It generates competing root-cause hypotheses, verifies them, and returns the most likely causes with next validation steps.
+- `perf-review`: Reviews a slow path or workload for bottleneck hypotheses, measurement gaps, and safe optimization directions. It avoids claiming certainty when measurement evidence is missing.
+- `ping`: Minimal smoke workflow for checking that the engine can run one structured agent call.
 
 ## The code-review workflow
 
