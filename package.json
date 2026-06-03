@@ -16,6 +16,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test:ui": "bun scripts/test-workflow-ui.ts",
     "prepublishOnly": "tsc --noEmit"
   },
   "peerDependencies": {

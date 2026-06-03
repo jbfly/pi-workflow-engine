@@ -1,0 +1,111 @@
+// No-LLM workflow UI tests. Run: `bun scripts/test-workflow-ui.ts`
+import assert from "node:assert/strict";
+import { Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
+import { isCodeReviewResult, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";
+
+type ThemeBg = Parameters<Theme["bg"]>[0];
+
+const fgKeys: ThemeColor[] = [
+  "accent",
+  "border",
+  "borderAccent",
+  "borderMuted",
+  "success",
+  "error",
+  "warning",
+  "muted",
+  "dim",
+  "text",
+  "thinkingText",
+  "userMessageText",
+  "customMessageText",
+  "customMessageLabel",
+  "toolTitle",
+  "toolOutput",
+  "mdHeading",
+  "mdLink",
+  "mdLinkUrl",
+  "mdCode",
+  "mdCodeBlock",
+  "mdCodeBlockBorder",
+  "mdQuote",
+  "mdQuoteBorder",
+  "mdHr",
+  "mdListBullet",
+  "toolDiffAdded",
+  "toolDiffRemoved",
+  "toolDiffContext",
+  "syntaxComment",
+  "syntaxKeyword",
+  "syntaxFunction",
+  "syntaxVariable",
+  "syntaxString",
+  "syntaxNumber",
+  "syntaxType",
+  "syntaxOperator",
+  "syntaxPunctuation",
+  "thinkingOff",
+  "thinkingMinimal",
+  "thinkingLow",
+  "thinkingMedium",
+  "thinkingHigh",
+  "thinkingXhigh",
+  "bashMode",
+];
+
+const bgKeys: ThemeBg[] = ["selectedBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"];
+
+const theme = new Theme(
+  Object.fromEntries(fgKeys.map((key) => [key, ""])) as Record<ThemeColor, string | number>,
+  Object.fromEntries(bgKeys.map((key) => [key, ""])) as Record<ThemeBg, string | number>,
+  "truecolor",
+);
+
+assert.equal(formatDuration(0), "0s");
+assert.equal(formatDuration(999), "999ms");
+assert.equal(formatDuration(1_000), "1s");
+assert.equal(formatDuration(61_000), "1m 1s");
+assert.equal(formatDuration(3_600_000), "1h");
+
+assert.equal(formatCount(999), "999");
+assert.equal(formatCount(1_200), "1.2k");
+assert.equal(formatCount(1_200_000), "1.2m");
+
+const ascii = truncateDisplay("abcdef", 4);
+assert.ok(visibleWidth(ascii) <= 4);
+assert.notEqual(ascii, "abcdef");
+const wide = truncateDisplay("漢字かな", 4);
+assert.ok(visibleWidth(wide) <= 4);
+
+const validReport = {
+  summary: "Review complete.",
+  findings: [
+    {
+      file: "src/app.ts",
+      line: 10,
+      severity: "bug",
+      verdict: "CONFIRMED",
+      summary: "Off-by-one in retry loop.",
+      evidence: "line 10 increments before checking the limit",
+      failure_scenario: "A final retry is skipped.",
+    },
+  ],
+  stats: { files: 2, candidates: 3, verified: 1, kept: 1 },
+};
+
+assert.equal(isCodeReviewResult(validReport), true);
+assert.equal(isCodeReviewResult({ summary: "bad", findings: [{ file: 123, summary: "x" }] }), false);
+assert.equal(isCodeReviewResult({ summary: "generic workflow", value: 42 }), false);
+
+const collapsed = renderWorkflowResultText("code-review", validReport, false, theme);
+assert.match(collapsed, /Workflow: code-review/);
+assert.match(collapsed, /Review complete/);
+assert.match(collapsed, /files 2/);
+assert.match(collapsed, /src\/app\.ts/);
+
+const expanded = renderWorkflowResultText("code-review", validReport, true, theme);
+assert.match(expanded, /Evidence: line 10 increments before checking the limit/);
+
+console.log("workflow UI tests passed");

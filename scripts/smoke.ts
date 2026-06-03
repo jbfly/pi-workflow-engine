@@ -2,6 +2,10 @@
 // workflow registry/discovery resolves. Run: `bun scripts/smoke.ts`
 import { fileURLToPath } from "node:url";
 import { discoverWorkflows } from "../src/discovery.ts";
+import "../src/ui/workflow-format.ts";
+import "../src/ui/workflow-inspector.ts";
+import "../src/ui/workflow-result-renderer.ts";
+import "../src/ui/workflow-widget.ts";
 
 const repoDir = fileURLToPath(new URL("..", import.meta.url));
 const workflows = await discoverWorkflows(repoDir);
