@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { Type } from "typebox";
 import {
   AdvisoryCandidatesSchema,
+  AdvisoryReportSchema,
   AdvisoryVerdictSchema,
   type AdvisoryCandidate,
   type AdvisoryFinding,
@@ -22,21 +23,6 @@ const ScopeSchema = Type.Object({
   files: Type.Array(Type.String(), { description: "Changed file paths" }),
   summary: Type.String({ description: "One-paragraph summary of the change" }),
   conventions: Type.Optional(Type.String({ description: "Relevant CLAUDE.md / project conventions" })),
-});
-
-const ReportSchema = Type.Object({
-  summary: Type.String(),
-  findings: Type.Array(
-    Type.Object({
-      file: Type.String(),
-      line: Type.Optional(Type.Number()),
-      severity: Type.Union([Type.Literal("bug"), Type.Literal("cleanup")]),
-      verdict: Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE")]),
-      summary: Type.String(),
-      evidence: Type.Optional(Type.String()),
-      failure_scenario: Type.Optional(Type.String()),
-    }),
-  ),
 });
 
 type Candidate = AdvisoryCandidate;
@@ -138,7 +124,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope) {
-    return { summary: "No changes found to review.", findings: [], stats: makeStats(0, 0) };
+    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
   }
 
   fileCount = scope.files.length;
@@ -147,7 +133,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   progress({ type: "counter", key: "files", label: "files", value: fileCount });
 
   if (scope.files.length === 0) {
-    return { summary: "No changes found to review.", findings: [], stats: makeStats(0, 0) };
+    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
   }
   log(`${scope.files.length} changed files`);
 
@@ -282,7 +268,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   log(`${verified.length} verified → ${surviving.length} kept`);
 
   if (surviving.length === 0) {
-    return { summary: "No findings survived verification.", findings: [], stats };
+    return { summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats };
   }
 
   // ─── Synthesize: rank, merge, report ───
@@ -293,24 +279,27 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     .map(
       (finding, index) =>
         `### [${index}] ${formatLocation(finding)} (${finding.verdict}${finding.kind === "cleanup" ? ", cleanup" : ""})\n` +
+        `Category: ${finding.kind}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
         `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
     )
     .join("\n\n");
 
   const report = await agent(
     `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
-      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final report. Include evidence and failure_scenario (from impact) for each finding when available. Structured output only.",
-    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: ReportSchema },
+      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
+      "Return summary, findings, and nextSteps. For each finding: category must be bug or cleanup; severity is impact level (low/medium/high), not category; " +
+      "confidence must be high for CONFIRMED and medium for PLAUSIBLE; copy locations and evidence arrays from the verified finding; impact is the concrete failure or maintenance scenario; recommendation is an advisory fix direction, not an edit. Structured output only.",
+    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
   );
 
-  if (!report) return { summary: "Synthesis produced no output.", findings: [], stats };
+  if (!report) return { summary: "Synthesis produced no output.", findings: [], nextSteps: ["Re-run the workflow or inspect verifier evidence manually."], stats };
 
   const findings = report.findings.map((finding) => {
     const source = ranked.find((candidate) => sameFinding(candidate, finding));
     return {
       ...finding,
-      evidence: finding.evidence ?? (source ? formatEvidence(source.evidence) : undefined),
-      failure_scenario: finding.failure_scenario ?? source?.impact,
+      evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
+      impact: finding.impact || source?.impact || "Impact not restated by synthesis.",
     };
   });
   return { ...report, findings, stats };
@@ -353,7 +342,19 @@ function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "e
   }
 }
 
-function sameFinding(candidate: Verified, finding: { file: string; line?: number; summary: string }): boolean {
-  const location = primaryLocation(candidate);
-  return normalizePath(location.file) === normalizePath(finding.file) && location.line === finding.line;
+function verdictConfidence(verdict: Verified["verdict"]): "high" | "medium" | "low" {
+  switch (verdict) {
+    case "CONFIRMED":
+      return "high";
+    case "PLAUSIBLE":
+      return "medium";
+    case "REFUTED":
+      return "low";
+  }
+}
+
+function sameFinding(candidate: Verified, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
+  const candidateLocation = primaryLocation(candidate);
+  const findingLocation = primaryLocation(finding);
+  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
 }
