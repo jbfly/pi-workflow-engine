@@ -3,7 +3,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "code-review",
-  description: "Fan-out review of the current diff: scope → per-angle find → independent verify → synthesize.",
+  description: "Fan-out review of the branch's open PR (or branch vs main): scope → per-angle find → independent verify → synthesize.",
   phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Synthesize" }],
 };
 
@@ -82,12 +82,19 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const scope = await agent(
     "Establish the scope of a code review.\n" +
       (target
-        ? `Target / instructions (verbatim): "${target}". If it names a PR, branch, ref range, or files, build the matching git diff command; otherwise review the current branch.\n`
-        : "No target given — review the current branch.\n") +
-      "Prefer 'git diff @{upstream}...HEAD', falling back to 'git diff main...HEAD' or 'git diff HEAD~1'; also include 'git diff HEAD' if there are uncommitted changes.\n" +
-      "1. Determine the diff command and run it to confirm it is non-empty.\n" +
-      "2. List the changed files.\n3. Summarize the change in one paragraph.\n" +
-      "4. Read any relevant CLAUDE.md and note conventions a reviewer should know.\nStructured output only.",
+        ? `Target / instructions (verbatim): "${target}". If it names a PR number, branch, ref range, or files, build the matching diff command (use 'gh pr diff <number>' for a PR). Otherwise use the default selection below.\n`
+        : "No explicit target — select the diff to review using the default below.\n") +
+      "Default selection — run commands to decide, falling through until you get a NON-EMPTY diff:\n" +
+      "1. Get the current branch: `git branch --show-current`.\n" +
+      "2. Check for an OPEN GitHub PR for this branch: `gh pr list --head <branch> --state open --json number,title`. " +
+      "If one exists, the diff command is `gh pr diff <number>` — note the PR number and title in the summary.\n" +
+      "3. If there is no open PR (or `gh` is unavailable / there is no GitHub remote), diff the branch against its base: " +
+      "prefer `git diff main...HEAD`, then `git diff master...HEAD`, then `git diff HEAD~1`. " +
+      "If the branch itself is main/master, use `git diff HEAD~1`.\n" +
+      "4. Run the chosen command to confirm the diff is non-empty.\n\n" +
+      "Then: list the changed files, summarize the change in one paragraph (mention the PR if one was found), " +
+      "and read any relevant CLAUDE.md noting conventions a reviewer should know.\n" +
+      "Return diffCommand exactly as a reviewer should run it. Structured output only.",
     { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
