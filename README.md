@@ -2,7 +2,26 @@
 
 # pi-workflow-engine
 
-A customisable multi-agent workflow-orchestration engine for the [pi](https://pi.dev) coding agent — your own version of Claude Code's built-in `/code-review`, built on pi's SDK. Workflows fan out to many subagents, pass validated structured data between stages, and synthesise a result.
+Claude Code style dynamic workflows for the [pi](https://pi.dev) coding agent.
+
+This is not just a way to run a prompt. It is a way to turn an agentic procedure into code: scope the task, fork isolated subagents, fan out across review lenses, validate every handoff with schemas, verify candidate findings, and synthesize one ranked result.
+
+The built-in example is a customisable `/workflow code-review`: your own version of Claude Code's built-in `/code-review`, built on pi's SDK and editable like normal TypeScript.
+
+## Why workflows matter
+
+Claude Code popularised a useful pattern: the best agentic coding work is not a single chat turn. It is a loop of context gathering, delegated action, verification, and synthesis. Its docs describe the [agentic loop](https://code.claude.com/docs/en/glossary#agentic-loop), [skills and commands](https://code.claude.com/docs/en/skills), [subagents](https://code.claude.com/docs/en/glossary#subagent), and newer [dynamic workflows](https://code.claude.com/docs/en/agent-sdk/subagents#scale-up-with-dynamic-workflows) as composable building blocks for repeatable engineering work.
+
+`pi-workflow-engine` brings that shape to pi:
+
+- **Procedures, not prompts**: write the workflow once, then invoke it as `/workflow code-review` or let the host agent call the `workflow` tool.
+- **Isolated subagents**: each `agent()` runs in its own in-memory pi session, so exploratory work does not pollute the main conversation.
+- **Parallel cognition**: run many focused agents at once, with a shared concurrency cap so large workflows stay bounded.
+- **Typed handoffs**: pass structured data between stages using typebox schemas instead of asking the model to emit parseable prose.
+- **Verifier stages**: make verification part of the control flow, not an optional final instruction.
+- **Live progress**: surface phases, agent status, counters, and lane items in the TUI while the run is still moving.
+
+The result is closer to an executable review playbook than a chatbot shortcut.
 
 ## Install
 
@@ -16,31 +35,40 @@ Or from npm:
 pi install npm:pi-workflow-engine
 ```
 
-That's all — pi fetches the package and serves its dependencies from its own bundle, so there's no clone, install, or build step. Restart pi (or run `/reload` in an open session), then confirm it's registered:
+That's all. pi fetches the package and serves its core dependencies from its own bundle, so there is no clone, install, or build step. Restart pi, or run `/reload` in an open session, then confirm it is registered:
 
 ```bash
 pi list
 ```
 
-Scope it to a single repo instead of globally (writes to that repo's `.pi/settings.json`):
+Scope it to a single repo instead of globally. This writes to that repo's `.pi/settings.json`:
 
 ```bash
 pi install git:github.com/timbrinded/pi-workflow-engine -l
 ```
 
-Uninstall with `pi remove git:github.com/timbrinded/pi-workflow-engine`.
+Uninstall with:
+
+```bash
+pi remove git:github.com/timbrinded/pi-workflow-engine
+```
 
 ## Usage
 
 In a pi session, from inside a git repo with changes:
 
-```
-/workflow code-review            # review the current branch
-/workflow code-review HEAD~3     # review a ref range / target / focus area
-/workflow ping                   # quick engine smoke test (one agent)
+```text
+/workflow code-review            # review the current branch or open PR
+/workflow code-review HEAD~3     # review a ref range, target, or focus area
+/workflow code-review --inspect  # open the live workflow inspector
+/workflow ping                   # quick engine smoke test
 ```
 
-The host agent can also invoke the `workflow` tool itself mid-conversation (e.g. "run the code-review workflow") and fold the structured result back into its reasoning.
+The host agent can also invoke the `workflow` tool mid-conversation:
+
+```text
+Run the code-review workflow on this PR and use the result before deciding what to fix.
+```
 
 `code-review` returns a verified, ranked report:
 
@@ -53,81 +81,109 @@ The host agent can also invoke the `workflow` tool itself mid-conversation (e.g.
       "line": 3,
       "severity": "bug",
       "verdict": "CONFIRMED",
-      "summary": "Off-by-one: `i <= arr.length` should be `i < arr.length`; accesses arr[arr.length] (undefined) → NaN."
+      "summary": "Off-by-one: `i <= arr.length` should be `i < arr.length`; accesses arr[arr.length] (undefined) -> NaN."
     }
   ]
 }
 ```
 
-## How it works
+## The code-review workflow
 
-A **workflow** is a TypeScript module that exports `meta` plus a default `async (api) => result`. The injected `api` gives you five primitives:
+The bundled workflow is deliberately shaped like a serious review process:
+
+1. **Scope**: detect the open PR or branch diff, list changed files, and read relevant project conventions.
+2. **Find**: fan out across focused review lenses such as logic bugs, error paths, edge cases, simplification, and conventions.
+3. **Gate and dedupe**: bound candidates to changed lines and collapse duplicate findings before spending verifier tokens.
+4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
+5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
+
+The review lenses live in `workflows/code-review.ts`. That is where your repo's real failure modes belong.
+
+## Authoring workflows
+
+A workflow is a TypeScript module that exports `meta` plus a default `async (api) => result`. The injected `api` gives you the primitives:
 
 | Primitive | Behaviour |
 |-----------|-----------|
-| `agent(prompt, { schema })` | Runs a subagent in an isolated session; with a typebox `schema` it returns validated structured data, otherwise the final text. |
-| `parallel(thunks)` | Runs every thunk concurrently and waits for all (a barrier). |
-| `pipeline(items, ...stages)` | Runs each item through all stages independently — no barrier between stages. |
-| `phase(title)` / `log(msg)` | Drive the live progress tree shown in the TUI. |
+| `agent(prompt, { schema })` | Runs a subagent in an isolated session. With a typebox `schema`, returns validated structured data; otherwise returns final text. |
+| `parallel(thunks)` | Runs every thunk concurrently and waits for all results. |
+| `pipeline(items, ...stages)` | Runs each item through all stages independently, with no barrier between stages. |
+| `phase(title)` / `log(msg)` | Drives the live progress tree shown in the TUI and stderr breadcrumbs when headless. |
+| `progress(event)` | Emits structured progress for richer workflow UI surfaces. |
 
 ```ts
 import { Type } from "typebox";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
-export const meta: WorkflowMeta = { name: "my-workflow", description: "..." };
+export const meta: WorkflowMeta = {
+  name: "my-workflow",
+  description: "Find, verify, and summarize something important.",
+};
 
-export default async function run({ agent, parallel, pipeline, phase, log, args }: WorkflowApi) {
+const FindingSchema = Type.Object({
+  summary: Type.String(),
+  file: Type.String(),
+  line: Type.Optional(Type.Number()),
+});
+
+export default async function run({ agent, parallel, phase }: WorkflowApi) {
   phase("Find");
-  const result = await agent("find issues ...", { schema: Type.Object({ /* ... */ }) });
-  return result; // a typed object, validated against the schema
+
+  const findings = await parallel([
+    () => agent("Find correctness bugs in the diff.", { schema: FindingSchema, thinkingLevel: "low" }),
+    () => agent("Find error-handling bugs in the diff.", { schema: FindingSchema, thinkingLevel: "low" }),
+  ]);
+
+  phase("Synthesize");
+  return agent(`Summarize these findings: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
 }
 ```
 
 Under the hood:
 
-- **Each `agent()` is an in-process pi `AgentSession`** (`createAgentSession` + `SessionManager.inMemory()`), inheriting the host's model unless you set one.
-- **Structured output is a terminating tool**: the engine registers one tool whose `parameters` *is* your schema; pi validates the call and the engine captures the args — no parsing.
-- **A single global semaphore caps concurrent agents**, so `parallel`/`pipeline` nest freely while the cap holds inside every `agent()` call.
-- **Surfaces**: a `/workflow <name> [args]` command, plus a `workflow` tool the host agent can call.
+- **Each `agent()` is an in-process pi `AgentSession`** using `createAgentSession` and `SessionManager.inMemory()`.
+- **Structured output is a terminating tool**. The engine registers one tool whose `parameters` is your schema; pi validates the call and the engine captures the args. There is no JSON scraping.
+- **A single global semaphore caps concurrent agents**, so `parallel` and `pipeline` can nest freely while every `agent()` call still respects the run cap.
+- **Two surfaces are registered**: `/workflow <name> [args]` for direct use, and a `workflow` tool for host-agent delegation.
 
 ## Local development
 
-Only needed if you want to **add or customise workflows, or contribute** — using the bundled workflows requires none of this.
+Only needed if you want to add workflows, customise workflows, or contribute. Using the bundled workflows requires none of this.
 
 ```bash
 git clone https://github.com/timbrinded/pi-workflow-engine
 cd pi-workflow-engine
-bun install            # dev deps for typechecking only; pi serves bundled copies at runtime
-bun run typecheck      # tsc --noEmit
-bun scripts/smoke.ts   # no-LLM check: module graph loads + workflow discovery resolves
+bun install
+bun run typecheck
+bun scripts/smoke.ts
 ```
 
-Load your working copy into a session without installing it (ephemeral — overrides nothing):
+Load your working copy into a session without installing it. This is ephemeral and overrides nothing:
 
 ```bash
 pi -e ./src/index.ts -p "/workflow ping"
 ```
 
-**Add a workflow:** drop a `.ts` in `workflows/`, import it in `src/workflows.ts`, and add it to `BUILTIN_WORKFLOWS`. Statically-imported workflows share pi's bundled `typebox`, which guarantees schema validation. (Files in `workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime, best-effort.)
+Add a workflow by creating `workflows/<name>.ts`, importing it in `src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
 
-**Customise the review:** edit the `ANGLES` array in `workflows/code-review.ts` — the lenses are where your codebase's real failure modes and conventions belong. Tune `model` / `thinkingLevel` / `tools` per `agent()` call, and `DEFAULT_CONCURRENCY` in `src/engine.ts`.
+Tune the built-in review workflow by editing the `ANGLES` array in `workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and tune `DEFAULT_CONCURRENCY` in `src/engine.ts`.
 
 ### Layout
 
-```
+```text
 src/
-  index.ts         extension entry (registers the command + tool)
+  index.ts         extension entry; registers the command and tool
   types.ts         WorkflowApi / WorkflowModule contracts
-  agent-runner.ts  the createAgentSession + terminating-tool schema bridge
+  agent-runner.ts  createAgentSession + terminating-tool schema bridge
   concurrency.ts   Semaphore, parallel(), pipeline()
-  engine.ts        runWorkflow() — binds the primitives to a run
+  engine.ts        runWorkflow(); binds primitives to one run
   progress.ts      live phase/agent tree via ctx.ui.setWidget
   discovery.ts     static registry + best-effort drop-in loading
 workflows/
-  code-review.ts   the example: scope → find → verify → synthesize
+  code-review.ts   scope -> find -> verify -> synthesize
   ping.ts          minimal smoke workflow
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
