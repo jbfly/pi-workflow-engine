@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowLaneItemStatus, WorkflowProgressEvent } from "./types.ts";
+import { statusText } from "./ui/workflow-format.ts";
 import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
 
 export type AgentRowStatus = "queued" | "running" | "done" | "failed";
@@ -99,6 +100,7 @@ export class ProgressTracker {
   private widgetRegistered = false;
   private tui: Pick<TUI, "requestRender"> | undefined;
   private widgetInterval: ReturnType<typeof setInterval> | undefined;
+  private lastStatusText: string | undefined;
 
   constructor(
     private readonly ctx: ExtensionContext,
@@ -280,6 +282,14 @@ export class ProgressTracker {
     this.ensureWidget();
     this.widget?.invalidate();
     this.tui?.requestRender();
+    this.publishStatus();
+  }
+
+  private publishStatus(): void {
+    const next = statusText(this.snapshot(), this.ctx.ui.theme);
+    if (next === this.lastStatusText) return;
+    this.ctx.ui.setStatus("workflow", next);
+    this.lastStatusText = next;
   }
 
   private ensureWidget(): void {
@@ -321,6 +331,7 @@ export class ProgressTracker {
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget("workflow", undefined);
     this.ctx.ui.setStatus("workflow", status);
+    this.lastStatusText = status;
     this.widgetRegistered = false;
     this.widget = undefined;
     this.tui = undefined;

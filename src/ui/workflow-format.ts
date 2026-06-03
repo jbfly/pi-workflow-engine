@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { WorkflowProgressSnapshot } from "../progress.ts";
 import type { WorkflowLaneItemStatus } from "../types.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
@@ -55,6 +56,24 @@ export function badge(label: string, color: WorkflowThemeColor, theme: Theme): s
 export function truncateDisplay(text: string, width: number): string {
   if (width <= 0) return "";
   return truncateToWidth(text, width);
+}
+
+export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
+  if (snapshot.doneAt !== undefined) return undefined;
+
+  const agents = snapshot.phases.flatMap((phase) => phase.agents);
+  const complete = agents.filter((agent) => agent.status === "done" || agent.status === "failed").length;
+  const active = agents.filter((agent) => agent.status === "running" || agent.status === "queued").length;
+  const total = agents.length;
+  const kept = snapshot.counters.find((counter) => counter.key === "kept" || counter.label.toLowerCase() === "kept");
+  const displayName = snapshot.title === "code-review" ? "review" : snapshot.title;
+
+  const parts = [theme.fg("accent", displayName), theme.fg("muted", snapshot.currentPhase)];
+  if (total > 0) parts.push(theme.fg("muted", `${complete}/${total}`));
+  if (kept) parts.push(theme.fg("success", `${formatCount(kept.value)} kept`));
+  else if (active > 0) parts.push(theme.fg("muted", `${active} active`));
+
+  return parts.join(theme.fg("dim", " · "));
 }
 
 function formatCompact(value: number): string {
