@@ -26,6 +26,10 @@ export const AdvisoryCandidateSchema = Type.Object({
   recommendation: Type.Optional(Type.String({ description: "Optional first-step recommendation before synthesis." })),
 });
 
+export const AdvisoryCandidatesSchema = Type.Object({
+  candidates: Type.Array(AdvisoryCandidateSchema, { description: "Candidate advisory findings or hypotheses." }),
+});
+
 export const AdvisoryVerdictSchema = Type.Object({
   verdict: AdvisoryVerifierVerdictSchema,
   evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
@@ -54,6 +58,7 @@ export type AdvisoryConfidence = Static<typeof AdvisoryConfidenceSchema>;
 export type AdvisoryVerifierVerdict = Static<typeof AdvisoryVerifierVerdictSchema>;
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
+export type AdvisoryCandidates = Static<typeof AdvisoryCandidatesSchema>;
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;

@@ -1,5 +1,13 @@
 import { execSync } from "node:child_process";
 import { Type } from "typebox";
+import {
+  AdvisoryCandidatesSchema,
+  AdvisoryVerdictSchema,
+  type AdvisoryCandidate,
+  type AdvisoryFinding,
+  type AdvisoryLocation,
+  type AdvisoryVerdict,
+} from "../src/advisory-schema.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -14,22 +22,6 @@ const ScopeSchema = Type.Object({
   files: Type.Array(Type.String(), { description: "Changed file paths" }),
   summary: Type.String({ description: "One-paragraph summary of the change" }),
   conventions: Type.Optional(Type.String({ description: "Relevant CLAUDE.md / project conventions" })),
-});
-
-const CandidatesSchema = Type.Object({
-  candidates: Type.Array(
-    Type.Object({
-      file: Type.String(),
-      line: Type.Optional(Type.Number()),
-      summary: Type.String({ description: "One-line description of the issue" }),
-      failure_scenario: Type.String({ description: "Concrete scenario where this causes a problem" }),
-    }),
-  ),
-});
-
-const VerdictSchema = Type.Object({
-  verdict: Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE"), Type.Literal("REFUTED")]),
-  evidence: Type.String({ description: "Quote or cite the relevant line(s)" }),
 });
 
 const ReportSchema = Type.Object({
@@ -47,20 +39,16 @@ const ReportSchema = Type.Object({
   ),
 });
 
-interface Candidate {
-  file: string;
-  line?: number;
-  summary: string;
-  failure_scenario: string;
-}
+type Candidate = AdvisoryCandidate;
+
 interface Angle {
   label: string;
   kind: "bug" | "cleanup";
   text: string;
 }
 interface Verified extends Candidate {
-  verdict: "CONFIRMED" | "PLAUSIBLE" | "REFUTED";
-  evidence: string;
+  verdict: AdvisoryVerdict["verdict"];
+  evidence: string[];
   kind: "bug" | "cleanup";
 }
 
@@ -193,8 +181,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   // Dedup state accumulates as finders complete (the pipeline has no barrier).
   const seen = new Set<string>();
-  const dedupKey = (candidate: Candidate): string =>
-    `${candidate.file}:${candidate.line != null ? Math.round(candidate.line / 5) * 5 : candidate.summary.slice(0, 40).toLowerCase()}`;
+  const dedupKey = (candidate: Candidate): string => {
+    const location = primaryLocation(candidate);
+    const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : candidate.summary.slice(0, 40).toLowerCase();
+    return `${normalizePath(location.file)}:${lineKey}`;
+  };
 
   // ─── Find → dedup → Verify (no barrier between stages) ───
   phase("Find");
@@ -208,15 +199,16 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           `Review the change through ONLY this lens:\n${angle.text}\n` +
           "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
           "You may read surrounding files for context, but never report issues in unchanged code. " +
-          `Surface up to ${PER_ANGLE} candidates, each with file, a line that appears in the diff, a one-line summary, and a concrete failure_scenario. ` +
-          "Pass through anything with a nameable failure scenario — a separate verifier judges them next. Structured output only.",
-        { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, thinkingLevel: "low", schema: CandidatesSchema },
+          `Surface up to ${PER_ANGLE} candidates. Use category exactly "${angle.kind}". Each candidate must include a one-line summary, ` +
+          "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
+          "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
+        { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
       );
       const raw = (found?.candidates ?? []).slice(0, PER_ANGLE);
       rawCandidateCount += raw.length;
       progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
       const gate = changed;
-      const bounded = gate ? raw.filter((candidate) => inDiff(gate, candidate.file, candidate.line)) : raw;
+      const bounded = gate ? raw.filter((candidate) => inDiff(gate, primaryLocation(candidate).file, primaryLocation(candidate).line)) : raw;
       const dropped = raw.length - bounded.length;
       if (dropped > 0) {
         droppedCandidateCount += dropped;
@@ -232,7 +224,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           title: candidate.summary,
           subtitle: formatLocation(candidate),
           status: "pending",
-          details: candidate.failure_scenario,
+          details: candidate.impact,
         });
       }
       return { angle, candidates: bounded };
@@ -248,13 +240,20 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       });
       const verdicts = await parallel(
         novel.map((candidate) => async (): Promise<Verified | null> => {
+          const location = primaryLocation(candidate);
           const judged = await agent(
             `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
-              `File: ${candidate.file}${candidate.line != null ? `:${candidate.line}` : ""}\n` +
-              `Summary: ${candidate.summary}\nFailure scenario: ${candidate.failure_scenario}\n\n` +
+              `Location: ${formatLocation(candidate)}\n` +
+              `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
               "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / REFUTED) " +
               "with evidence quoting the line(s). Default toward REFUTED if you cannot substantiate it. Structured output only.",
-            { phase: "Verify", label: `verify:${candidate.file.split("/").pop() ?? candidate.file}`, tools: TOOLS, thinkingLevel: "low", schema: VerdictSchema },
+            {
+              phase: "Verify",
+              label: `verify:${location.file.split("/").pop() ?? location.file}`,
+              tools: TOOLS,
+              thinkingLevel: "low",
+              schema: AdvisoryVerdictSchema,
+            },
           );
           if (!judged) return null;
           progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
@@ -264,7 +263,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
             title: candidate.summary,
             subtitle: formatLocation(candidate),
             status: verdictStatus(judged.verdict),
-            details: judged.evidence,
+            details: formatEvidence(judged.evidence),
           });
           return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
         }),
@@ -293,14 +292,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const block = ranked
     .map(
       (finding, index) =>
-        `### [${index}] ${finding.file}${finding.line != null ? `:${finding.line}` : ""} (${finding.verdict}${finding.kind === "cleanup" ? ", cleanup" : ""})\n` +
-        `${finding.summary}\nFailure: ${finding.failure_scenario}\nEvidence: ${finding.evidence}`,
+        `### [${index}] ${formatLocation(finding)} (${finding.verdict}${finding.kind === "cleanup" ? ", cleanup" : ""})\n` +
+        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
     )
     .join("\n\n");
 
   const report = await agent(
     `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
-      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final report. Include evidence and failure_scenario for each finding when available. Structured output only.",
+      "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final report. Include evidence and failure_scenario (from impact) for each finding when available. Structured output only.",
     { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: ReportSchema },
   );
 
@@ -310,15 +309,26 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     const source = ranked.find((candidate) => sameFinding(candidate, finding));
     return {
       ...finding,
-      evidence: finding.evidence ?? source?.evidence,
-      failure_scenario: finding.failure_scenario ?? source?.failure_scenario,
+      evidence: finding.evidence ?? (source ? formatEvidence(source.evidence) : undefined),
+      failure_scenario: finding.failure_scenario ?? source?.impact,
     };
   });
   return { ...report, findings, stats };
 }
 
-function formatLocation(candidate: Pick<Candidate, "file" | "line">): string {
-  return `${candidate.file}${candidate.line != null ? `:${candidate.line}` : ""}`;
+function primaryLocation(candidate: Pick<Candidate, "locations">): AdvisoryLocation {
+  return candidate.locations[0] ?? { file: "" };
+}
+
+function formatLocation(candidate: Pick<Candidate, "locations">): string {
+  const location = primaryLocation(candidate);
+  const line = location.line != null ? `:${location.line}` : "";
+  const symbol = location.symbol ? ` (${location.symbol})` : "";
+  return `${location.file}${line}${symbol}`;
+}
+
+function formatEvidence(evidence: string[]): string {
+  return evidence.join("; ");
 }
 
 function verdictLane(verdict: Verified["verdict"]): string {
@@ -344,5 +354,6 @@ function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "e
 }
 
 function sameFinding(candidate: Verified, finding: { file: string; line?: number; summary: string }): boolean {
-  return normalizePath(candidate.file) === normalizePath(finding.file) && candidate.line === finding.line;
+  const location = primaryLocation(candidate);
+  return normalizePath(location.file) === normalizePath(finding.file) && location.line === finding.line;
 }
