@@ -9,6 +9,21 @@ export interface WorkflowMeta {
 }
 
 /** Options for a single `agent()` call. */
+export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
+
+export type WorkflowProgressEvent =
+  | { type: "counter"; key: string; label: string; value: number }
+  | { type: "counter_delta"; key: string; label: string; delta: number }
+  | {
+      type: "lane_item";
+      lane: string;
+      title: string;
+      subtitle?: string;
+      status: WorkflowLaneItemStatus;
+      details?: string;
+    }
+  | { type: "summary"; key: string; value: string | number };
+
 export interface AgentOptions<S extends TSchema = TSchema> {
   /** Label shown in the progress tree (e.g. "find:logic-bugs"). */
   label?: string;
@@ -44,6 +59,8 @@ export interface WorkflowApi {
   phase(title: string): void;
   /** Emit a progress line. */
   log(message: string): void;
+  /** Emit a structured progress event for native workflow UI surfaces. */
+  progress(event: WorkflowProgressEvent): void;
   /** Raw argument string passed after the workflow name. */
   args: string;
   /** Working directory of the host session (typically the repo root). */
