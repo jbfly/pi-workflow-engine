@@ -1,12 +1,20 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import type { AdvisoryFinding, AdvisoryLocation, AdvisoryReport } from "../advisory-schema.ts";
+import type { PerfAggregate } from "../perf.ts";
 import { badge, formatCount, type WorkflowThemeColor } from "./workflow-format.ts";
+
+export interface WorkflowPerfDetails {
+  readonly enabled: boolean;
+  readonly startedAt: number;
+  readonly aggregates: readonly PerfAggregate[];
+}
 
 export interface WorkflowResultEnvelope {
   name: string;
   result: unknown;
   completedAt: number;
+  perf?: WorkflowPerfDetails;
 }
 
 export interface AdvisoryWorkflowResult extends AdvisoryReport {

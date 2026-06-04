@@ -114,8 +114,10 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
     throwIfAborted(rc.signal);
     // Track queued agents before acquiring a global concurrency slot.
     const rowId = rc.progress.agentQueued(opts.phase, label);
-    return await rc.semaphore.run(
-      async () => {
+    let failureHandled = false;
+    try {
+      return await rc.semaphore.run(
+        async () => {
         throwIfAborted(rc.signal);
         rc.progress.agentStart(opts.phase, label, rowId);
 
@@ -204,6 +206,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           );
         } catch (error) {
           failed = true;
+          failureHandled = true;
           rc.progress.agentFailed(label, error, rowId);
           rc.progress.log(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
@@ -221,8 +224,15 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           }
           if (!failed) rc.progress.agentDone(label, rowId);
         }
-      },
-      { onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs, tags), signal: rc.signal },
-    );
+        },
+        { onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs, tags), signal: rc.signal },
+      );
+    } catch (error) {
+      if (!failureHandled) {
+        rc.progress.agentFailed(label, error, rowId);
+        rc.progress.log(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      throw error;
+    }
   }, tags);
 }

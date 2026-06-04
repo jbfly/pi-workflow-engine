@@ -3,7 +3,7 @@ import { parallel, pipeline, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal } from "./cancellation.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
-import { createPerfRecorder } from "./perf.ts";
+import { createPerfRecorder, type PerfSnapshot } from "./perf.ts";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
@@ -32,9 +32,10 @@ export async function runWorkflow(
       .catch((error: unknown) => progress.log(`inspector failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
-  const perf = createPerfRecorder(resolvedOptions.perf);
+  const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const runAbortController = new AbortController();
-  const unlinkAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
+  const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
+  const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
   const rc: RunContext = {
     cwd: ctx.cwd,
     hostModel: ctx.model,
@@ -65,9 +66,23 @@ export async function runWorkflow(
   };
 
   try {
-    return await mod.default(api);
+    return await perf.time("workflow.total_ms", () => mod.default(api));
   } finally {
-    unlinkAbortSignal();
+    const snapshot = perf.snapshot();
+    if (resolvedOptions.perf) {
+      resolvedOptions.onPerfSnapshot?.(snapshot);
+      progress.log(formatPerfSummary(snapshot));
+    }
+    unlinkContextAbortSignal();
+    unlinkOptionAbortSignal();
     progress.done();
   }
+}
+
+function formatPerfSummary(snapshot: PerfSnapshot): string {
+  const parts = snapshot.aggregates
+    .filter((aggregate) => aggregate.count > 0)
+    .slice(0, 5)
+    .map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
+  return parts.length > 0 ? `perf: ${parts.join(", ")}` : "perf: no samples";
 }

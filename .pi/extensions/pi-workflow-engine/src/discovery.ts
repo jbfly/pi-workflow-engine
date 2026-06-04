@@ -14,6 +14,7 @@ type WorkflowModuleCandidate = {
 export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
   readonly perf?: PerfSink;
+  readonly userWorkflowDir?: string;
 }
 
 const discoveryCache = new Map<string, Map<string, WorkflowModule>>();
@@ -77,7 +78,9 @@ async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set(
  * bundled example is always the verified one even if a same-named file is dropped in.
  */
 export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, WorkflowModule>> {
-  const cached = discoveryCache.get(repoDir);
+  const userWorkflowDir = options.userWorkflowDir ?? join(homedir(), ".pi", "agent", "workflows");
+  const cacheKey = `${repoDir}\0${userWorkflowDir}`;
+  const cached = discoveryCache.get(cacheKey);
   if (cached && !options.refresh) {
     options.perf?.counter("discovery.cache_hit");
     return new Map(cached);
@@ -88,7 +91,6 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
     for (const mod of BUILTIN_WORKFLOWS) next.set(mod.meta.name, mod);
 
     const repoWorkflowDir = join(repoDir, "workflows");
-    const userWorkflowDir = join(homedir(), ".pi", "agent", "workflows");
     const [repoDynamic, userDynamic] = await Promise.all([
       timed(options.perf, "discovery.repo_dir_ms", () => loadDir(repoWorkflowDir, BUILTIN_WORKFLOW_FILES)),
       timed(options.perf, "discovery.user_dir_ms", () => loadDir(userWorkflowDir)),
@@ -103,7 +105,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
     return next;
   });
 
-  discoveryCache.set(repoDir, byName);
+  discoveryCache.set(cacheKey, byName);
   return new Map(byName);
 }
 

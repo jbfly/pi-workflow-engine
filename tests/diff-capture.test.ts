@@ -21,7 +21,7 @@ async function fakeBin(script: string): Promise<{ dir: string; env: NodeJS.Proce
 test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
   assert.deepEqual(parseAllowedDiffCommand("git diff main...HEAD -- src/app.ts"), {
     file: "git",
-    args: ["diff", "main...HEAD", "--", "src/app.ts"],
+    args: ["diff", "--no-ext-diff", "main...HEAD", "--", "src/app.ts"],
   });
   assert.deepEqual(parseAllowedDiffCommand("gh pr diff 123 --patch"), {
     file: "gh",
@@ -29,6 +29,15 @@ test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
   });
   assert.ok("error" in parseAllowedDiffCommand("git status"));
   assert.ok("error" in parseAllowedDiffCommand("git diff main; rm -rf /"));
+});
+
+test("parseAllowedDiffCommand rejects side-effecting git diff options", () => {
+  const outputEquals = parseAllowedDiffCommand("git diff --output=.tmp-diff HEAD");
+  if (!("error" in outputEquals)) assert.fail("expected --output= to be rejected");
+  assert.match(outputEquals.error, /unsupported/);
+  assert.ok("error" in parseAllowedDiffCommand("git diff --output .tmp-diff HEAD"));
+  assert.ok("error" in parseAllowedDiffCommand("git diff --ext-diff HEAD"));
+  assert.ok("error" in parseAllowedDiffCommand("git diff --no-index a b"));
 });
 
 test("captureDiff captures stdout for an allowed command", async () => {
@@ -63,7 +72,7 @@ test("captureDiff enforces max buffer", async () => {
 test("captureDiff enforces timeout", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\nwhile true; do :; done\n");
   try {
-    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env });
+    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /timed out/);
   } finally {
@@ -75,11 +84,22 @@ test("captureDiff honors abort signals", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\nwhile true; do :; done\n");
   const controller = new AbortController();
   try {
-    const running = captureDiff("git diff HEAD", { cwd: process.cwd(), signal: controller.signal, timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env });
+    const running = captureDiff("git diff HEAD", { cwd: process.cwd(), signal: controller.signal, timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
     controller.abort();
     const result = await running;
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /aborted/);
+  } finally {
+    await bin.cleanup();
+  }
+});
+
+test("captureDiff resolves when child ignores SIGTERM", async () => {
+  const bin = await fakeBin("#!/usr/bin/env bash\ntrap '' TERM\nwhile true; do :; done\n");
+  try {
+    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /timed out/);
   } finally {
     await bin.cleanup();
   }

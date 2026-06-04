@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -94,23 +94,23 @@ test("dynamic discovery skips bundled workflow basenames in repo workflow dir", 
   }
 });
 
-test("user drop-in workflows still load", async () => {
+test("user drop-in workflows still load from an injected test directory", async () => {
   const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-user-"));
-  const userWorkflowDir = join(homedir(), ".pi", "agent", "workflows");
+  const tempUserRoot = await mkdtemp(join(tmpdir(), "workflow-engine-user-workflows-"));
+  const userWorkflowDir = join(tempUserRoot, "workflows");
   const name = `user-dropin-${Date.now()}`;
-  const file = join(userWorkflowDir, `${name}.ts`);
 
   try {
     await mkdir(userWorkflowDir, { recursive: true });
     await writeFile(
-      file,
+      join(userWorkflowDir, `${name}.ts`),
       `export const meta = { name: "${name}", description: "user drop-in" };\nexport default async function run() { return "ok"; }\n`,
     );
 
-    const workflows = await discoverWorkflows(tempRepo, { refresh: true });
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir });
     assert.equal(workflows.get(name)?.meta.description, "user drop-in");
   } finally {
-    await rm(file, { force: true });
+    await rm(tempUserRoot, { recursive: true, force: true });
     await rm(tempRepo, { recursive: true, force: true });
   }
 });

@@ -9,26 +9,35 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function createProgress(): AgentProgress {
+function createProgress(): AgentProgress & { events: string[] } {
+  const events: string[] = [];
   return {
-    agentQueued() {
-      return 1;
+    events,
+    agentQueued(_phase, label) {
+      events.push(`queued:${label}`);
+      return events.length;
     },
-    agentStart() {},
+    agentStart(_phase, label) {
+      events.push(`start:${label}`);
+    },
     agentTool() {},
-    agentDone() {},
-    agentFailed() {},
+    agentDone(label) {
+      events.push(`done:${label}`);
+    },
+    agentFailed(label) {
+      events.push(`failed:${label}`);
+    },
     log() {},
   };
 }
 
-function createRunContext(createSession: CreateAgentSession, signal: AbortSignal): RunContext {
+function createRunContext(createSession: CreateAgentSession, signal: AbortSignal, progress: AgentProgress = createProgress(), semaphore = new Semaphore(1)): RunContext {
   return {
     cwd: process.cwd(),
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
-    semaphore: new Semaphore(1),
-    progress: createProgress(),
+    semaphore,
+    progress,
     signal,
     perf: new NoopPerfRecorder(),
     createSession,
@@ -81,6 +90,40 @@ test("parallel aborts siblings after first failure", async () => {
   await delay(10);
   assert.equal(controller.signal.aborted, true);
   assert.equal(siblingRan, false);
+});
+
+test("runAgent marks queued row failed when semaphore acquisition aborts", async () => {
+  const semaphore = new Semaphore(1);
+  const progress = createProgress();
+  const firstController = new AbortController();
+  const queuedController = new AbortController();
+  let releaseFirst: (() => void) | undefined;
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [] },
+      async prompt() {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  const first = runAgent(createRunContext(createSession, firstController.signal, progress, semaphore), "first", { label: "first" });
+  await delay(1);
+  const queued = runAgent(createRunContext(createSession, queuedController.signal, progress, semaphore), "queued", { label: "queued" });
+  await delay(1);
+  queuedController.abort(new WorkflowAbortError("queued stop"));
+
+  await assert.rejects(queued, /queued stop/);
+  releaseFirst?.();
+  await first;
+  assert.ok(progress.events.includes("failed:queued"), progress.events.join(","));
 });
 
 test("runAgent calls session.abort when the run signal aborts", async () => {

@@ -1,6 +1,7 @@
 import type { Static, TSchema } from "typebox";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Pipeline } from "./concurrency.ts";
+import type { PerfSink, PerfSnapshot } from "./perf.ts";
 
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
@@ -22,6 +23,12 @@ export interface WorkflowRunOptions {
   perf?: boolean;
   concurrency?: number;
   parallelSubmissionLimit?: number;
+  /** Additional abort signal to compose with the host context signal. */
+  signal?: AbortSignal;
+  /** Internal recorder override for command/tool invocation timing. */
+  perfRecorder?: PerfSink;
+  /** Called with the final performance snapshot when perf is enabled. */
+  onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
 }
 
 /** Options for a single `agent()` call. */

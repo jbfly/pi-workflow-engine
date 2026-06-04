@@ -3,7 +3,8 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
-import { isWorkflowResult, renderWorkflowResult, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
+import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
+import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -15,12 +16,24 @@ function summarize(result: unknown): string {
   return typeof result === "string" ? result : "Workflow finished.";
 }
 
-function formatMessageContent(name: string, result: unknown): string {
-  return `## Workflow: ${name}\n\n${summarize(result)}`;
+function formatMessageContent(name: string, result: unknown, perf?: WorkflowPerfDetails): string {
+  const perfLine = formatPerfLine(perf);
+  return `## Workflow: ${name}\n\n${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}`;
 }
 
-function workflowEnvelope(name: string, result: unknown): WorkflowResultEnvelope {
-  return { name, result, completedAt: Date.now() };
+function workflowEnvelope(name: string, result: unknown, perf?: WorkflowPerfDetails): WorkflowResultEnvelope {
+  return { name, result, completedAt: Date.now(), perf };
+}
+
+function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
+  if (!snapshot?.enabled) return undefined;
+  return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
+}
+
+function formatPerfLine(perf: WorkflowPerfDetails | undefined): string | undefined {
+  if (!perf) return undefined;
+  const parts = perf.aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
+  return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
 }
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
@@ -32,6 +45,13 @@ async function loadDiscovery(): Promise<DiscoveryModule> {
 
 async function loadEngine(): Promise<EngineModule> {
   return await import("./src/engine.ts");
+}
+
+async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSink | undefined> {
+  const enabled = options.perf ?? process.env.PI_WORKFLOW_PERF === "1";
+  if (!enabled) return undefined;
+  const { createPerfRecorder } = await import("./src/perf.ts");
+  return createPerfRecorder(true);
 }
 
 export interface WorkflowInvocation {
@@ -63,6 +83,10 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     }
     if (token === "--refresh") {
       refreshDiscovery = true;
+      continue;
+    }
+    if (token === "--perf") {
+      options.perf = true;
       continue;
     }
     if (token.startsWith("--concurrency=")) {
@@ -118,11 +142,22 @@ async function sendWorkflowResult(
   mod: WorkflowModule,
   args: string,
   options: WorkflowRunOptions,
+  perfRecorder?: PerfSink,
 ): Promise<void> {
   const { runWorkflow } = await loadEngine();
-  const result = await runWorkflow(ctx, mod, args, options);
+  let perfSnapshot: PerfSnapshot | undefined;
+  const result = await runWorkflow(ctx, mod, args, {
+    ...options,
+    perf: options.perf ?? perfRecorder !== undefined,
+    perfRecorder,
+    onPerfSnapshot(snapshot) {
+      perfSnapshot = snapshot;
+      options.onPerfSnapshot?.(snapshot);
+    },
+  });
+  const perf = compactPerfSnapshot(perfSnapshot);
   pi.sendMessage(
-    { customType: "workflow-result", content: formatMessageContent(name, result), display: true, details: workflowEnvelope(name, result) },
+    { customType: "workflow-result", content: formatMessageContent(name, result, perf), display: true, details: workflowEnvelope(name, result, perf) },
     { triggerTurn: false },
   );
 }
@@ -139,8 +174,9 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const direct = parseWorkflowInvocation(args);
+      const perfRecorder = await createInvocationPerf(direct.options);
       const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery });
+      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
       const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
 
@@ -155,7 +191,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         return;
       }
 
-      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, invocation.options);
+      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, invocation.options, perfRecorder);
     },
   });
 
@@ -170,6 +206,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
+      perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
@@ -183,9 +220,16 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       const text = first?.type === "text" ? first.text : "Workflow finished.";
       return new Text(theme.fg("muted", text), 0, 0);
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const runOptions: WorkflowRunOptions = {
+        concurrency: params.concurrency,
+        parallelSubmissionLimit: params.parallelSubmissionLimit,
+        perf: params.perf,
+        signal,
+      };
+      const perfRecorder = await createInvocationPerf(runOptions);
       const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR);
+      const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder });
       const mod = workflows.get(params.name);
       if (!mod) {
         const available = [...workflows.keys()].join(", ") || "(none)";
@@ -195,11 +239,18 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         };
       }
       const { runWorkflow } = await loadEngine();
+      let perfSnapshot: PerfSnapshot | undefined;
       const result = await runWorkflow(ctx, mod, params.args ?? "", {
-        concurrency: params.concurrency,
-        parallelSubmissionLimit: params.parallelSubmissionLimit,
+        ...runOptions,
+        perf: runOptions.perf ?? perfRecorder !== undefined,
+        perfRecorder,
+        onPerfSnapshot: (snapshot) => {
+          perfSnapshot = snapshot;
+        },
       });
-      return { content: [{ type: "text", text: summarize(result) }], details: workflowEnvelope(params.name, result) };
+      const perf = compactPerfSnapshot(perfSnapshot);
+      const perfLine = formatPerfLine(perf);
+      return { content: [{ type: "text", text: `${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}` }], details: workflowEnvelope(params.name, result, perf) };
     },
   });
 }
