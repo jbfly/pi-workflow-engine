@@ -4,6 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
+import { throwIfAborted } from "./cancellation.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -81,6 +82,19 @@ async function defaultCreateSession(options: CreateAgentSessionOptions): Promise
   return { session };
 }
 
+function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerSession): () => void {
+  if (!signal) return () => {};
+  if (signal.aborted) {
+    void session.abort();
+    return () => {};
+  }
+  const onAbort = () => {
+    void session.abort();
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
 /**
  * Run one subagent to completion in an isolated in-memory session.
  *
@@ -97,10 +111,12 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
   const tags = { label, phase };
 
   return await rc.perf.time("agent.total_ms", async () => {
+    throwIfAborted(rc.signal);
     // Track queued agents before acquiring a global concurrency slot.
     const rowId = rc.progress.agentQueued(opts.phase, label);
     return await rc.semaphore.run(
       async () => {
+        throwIfAborted(rc.signal);
         rc.progress.agentStart(opts.phase, label, rowId);
 
         let captured: unknown = null;
@@ -135,6 +151,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           const model = opts.model ? rc.modelRegistry.find("anthropic", opts.model) ?? rc.hostModel : rc.hostModel;
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
+          throwIfAborted(rc.signal);
           const created = await rc.perf.time(
             "agent.create_session_ms",
             () =>
@@ -150,6 +167,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             tags,
           );
           session = created.session;
+          throwIfAborted(rc.signal);
 
           unsubscribe = session.subscribe((event) => {
             if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
@@ -160,7 +178,14 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           const finalPrompt = opts.schema
             ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
             : prompt;
-          await rc.perf.time("agent.prompt_ms", () => session.prompt(finalPrompt), tags);
+          throwIfAborted(rc.signal);
+          const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
+          try {
+            await rc.perf.time("agent.prompt_ms", () => session.prompt(finalPrompt), tags);
+          } finally {
+            unlinkPromptAbort();
+          }
+          throwIfAborted(rc.signal);
 
           return rc.perf.timeSync(
             "agent.extract_result_ms",
@@ -195,7 +220,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           if (!failed) rc.progress.agentDone(label, rowId);
         }
       },
-      { onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs, tags) },
+      { onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs, tags), signal: rc.signal },
     );
   }, tags);
 }

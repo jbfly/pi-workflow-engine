@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { abortReason, throwIfAborted } from "./cancellation.ts";
 
 /**
  * A counting semaphore: bounds how many async tasks run at once.
@@ -14,12 +15,14 @@ export class Semaphore {
 
   constructor(private readonly max: number) {}
 
-  async run<T>(fn: () => Promise<T>, options: { onQueueWaitMs?: (durationMs: number) => void } = {}): Promise<T> {
+  async run<T>(fn: () => Promise<T>, options: { onQueueWaitMs?: (durationMs: number) => void; signal?: AbortSignal } = {}): Promise<T> {
+    throwIfAborted(options.signal);
     const queuedAt = performance.now();
     if (this.active >= this.max) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await this.waitForSlot(options.signal);
     }
     options.onQueueWaitMs?.(performance.now() - queuedAt);
+    throwIfAborted(options.signal);
     this.active++;
     try {
       return await fn();
@@ -28,11 +31,82 @@ export class Semaphore {
       this.waiters.shift()?.();
     }
   }
+
+  private async waitForSlot(signal: AbortSignal | undefined): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      const waiter = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const index = this.waiters.indexOf(waiter);
+        if (index !== -1) this.waiters.splice(index, 1);
+        cleanup();
+        reject(abortReason(signal));
+      };
+      if (signal?.aborted) {
+        reject(abortReason(signal));
+        return;
+      }
+      this.waiters.push(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+}
+
+export interface ParallelOptions {
+  readonly signal?: AbortSignal;
+  readonly abortController?: AbortController;
 }
 
 /** Run every thunk concurrently and wait for all results (a barrier). */
-export async function parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]> {
-  return Promise.all(thunks.map((thunk) => thunk()));
+export async function parallel<T>(thunks: Array<() => Promise<T>>, options: ParallelOptions = {}): Promise<T[]> {
+  throwIfAborted(options.signal);
+  const results = new Array<T>(thunks.length);
+  let remaining = thunks.length;
+  if (remaining === 0) return results;
+
+  return await new Promise<T[]>((resolve, reject) => {
+    let rejected = false;
+    const rejectOnce = (error: unknown) => {
+      if (rejected) return;
+      rejected = true;
+      options.abortController?.abort(error);
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => rejectOnce(abortReason(options.signal));
+    const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    thunks.forEach((thunk, index) => {
+      void Promise.resolve()
+        .then(() => {
+          throwIfAborted(options.signal);
+          return thunk();
+        })
+        .then(
+          (value) => {
+            if (rejected) return;
+            results[index] = value;
+            remaining--;
+            if (remaining === 0) {
+              cleanup();
+              resolve(results);
+            }
+          },
+          (error: unknown) => rejectOnce(error),
+        );
+    });
+  });
 }
 
 /**

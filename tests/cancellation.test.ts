@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { test } from "bun:test";
+import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import { WorkflowAbortError, throwIfAborted } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
+import { parallel, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createProgress(): AgentProgress {
+  return {
+    agentQueued() {
+      return 1;
+    },
+    agentStart() {},
+    agentTool() {},
+    agentDone() {},
+    agentFailed() {},
+    log() {},
+  };
+}
+
+function createRunContext(createSession: CreateAgentSession, signal: AbortSignal): RunContext {
+  return {
+    cwd: process.cwd(),
+    hostModel: undefined,
+    modelRegistry: { find: () => undefined },
+    semaphore: new Semaphore(1),
+    progress: createProgress(),
+    signal,
+    perf: new NoopPerfRecorder(),
+    createSession,
+  };
+}
+
+test("Semaphore rejects an aborted queued waiter without leaking slots", async () => {
+  const semaphore = new Semaphore(1);
+  let releaseFirst: (() => void) | undefined;
+  const first = semaphore.run(async () => {
+    await new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+  });
+
+  const controller = new AbortController();
+  const queued = semaphore.run(async () => "should not run", { signal: controller.signal });
+  controller.abort(new WorkflowAbortError("cancelled"));
+
+  await assert.rejects(queued, /cancelled/);
+  releaseFirst?.();
+  await first;
+
+  const after = await semaphore.run(async () => "after");
+  assert.equal(after, "after");
+});
+
+test("parallel aborts siblings after first failure", async () => {
+  const controller = new AbortController();
+  let siblingRan = false;
+
+  await assert.rejects(
+    parallel(
+      [
+        async () => {
+          throw new Error("boom");
+        },
+        async () => {
+          await delay(5);
+          throwIfAborted(controller.signal);
+          siblingRan = true;
+          return "late";
+        },
+      ],
+      { signal: controller.signal, abortController: controller },
+    ),
+    /boom/,
+  );
+
+  await delay(10);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(siblingRan, false);
+});
+
+test("runAgent calls session.abort when the run signal aborts", async () => {
+  const controller = new AbortController();
+  let aborts = 0;
+  let resolvePrompt: (() => void) | undefined;
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [] },
+      async prompt() {
+        await new Promise<void>((resolve) => {
+          resolvePrompt = resolve;
+        });
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {
+        aborts += 1;
+        resolvePrompt?.();
+      },
+    },
+  });
+
+  const running = runAgent(createRunContext(createSession, controller.signal), "hello", { label: "abort-me" });
+  await delay(1);
+  controller.abort(new WorkflowAbortError("stop"));
+
+  await assert.rejects(running, /stop/);
+  assert.equal(aborts, 1);
+});

@@ -1,6 +1,7 @@
 import { cpus } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parallel, pipeline, Semaphore } from "./concurrency.ts";
+import { linkAbortSignal } from "./cancellation.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder } from "./perf.ts";
@@ -31,13 +32,15 @@ export async function runWorkflow(
   }
 
   const perf = createPerfRecorder(options.perf ?? process.env.PI_WORKFLOW_PERF === "1");
+  const runAbortController = new AbortController();
+  const unlinkAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const rc: RunContext = {
     cwd: ctx.cwd,
     hostModel: ctx.model,
     modelRegistry: ctx.modelRegistry,
     semaphore: new Semaphore(DEFAULT_CONCURRENCY),
     progress,
-    signal: ctx.signal,
+    signal: runAbortController.signal,
     perf,
   };
 
@@ -45,19 +48,20 @@ export async function runWorkflow(
 
   const api: WorkflowApi = {
     agent,
-    parallel,
+    parallel: (thunks) => parallel(thunks, { signal: runAbortController.signal, abortController: runAbortController }),
     pipeline,
     phase: (title) => progress.phase(title),
     log: (message) => progress.log(message),
     progress: (event) => progress.event(event),
     args,
     cwd: ctx.cwd,
-    signal: ctx.signal,
+    signal: runAbortController.signal,
   };
 
   try {
     return await mod.default(api);
   } finally {
+    unlinkAbortSignal();
     progress.done();
   }
 }
