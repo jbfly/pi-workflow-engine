@@ -101,6 +101,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const pipelineResult = await runLensVerificationPipeline({
     api: { agent, parallel, pipeline, progress, log },
     lenses: REFACTOR_LENSES,
+    schedulingMode: "finder-barrier",
     perLens: PER_LENS,
     tools: TOOLS,
     finderPrompt: (lens) =>

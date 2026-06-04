@@ -91,7 +91,7 @@ export function inDiff(changed: Map<string, Set<number>>, file: string, line?: n
 }
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, pipeline, phase, log, progress, args, cwd } = api;
+  const { agent, parallel, phase, log, progress, args, cwd } = api;
   const target = args.trim();
   let fileCount = 0;
   let rawCandidateCount = 0;
@@ -167,7 +167,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     diffBlock +
     (target ? `\n## User instructions (verbatim)\n${target}\n` : "");
 
-  // Dedup state accumulates as finders complete (the pipeline has no barrier).
+  // Dedup after all finders complete so verifier agents cannot consume the global cap before full candidate discovery.
   const seen = new Set<string>();
   const dedupKey = (candidate: Candidate): string => {
     const location = primaryLocation(candidate);
@@ -175,12 +175,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     return `${normalizePath(location.file)}:${lineKey}`;
   };
 
-  // ─── Find → dedup → Verify (no barrier between stages) ───
+  // ─── Find barrier → dedup → Verify ───
   phase("Find");
-  const perAngle = await pipeline(
-    ANGLES,
-    // Stage 1: each angle finds candidates through its single lens.
-    async (_prev, angle) => {
+  const perAngle = await parallel(
+    ANGLES.map((angle) => async () => {
       const found = await agent(
         `## Code-review finder — ${angle.label}\n\n${scopeBlock}\n` +
           `Review the change through ONLY this lens:\n${angle.text}\n` +
@@ -215,42 +213,45 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
         });
       }
       return { angle, candidates: bounded };
-    },
-    // Stage 2: dedup against the shared set, then verify survivors concurrently.
-    async ({ angle, candidates }) => {
-      const novel = candidates.filter((candidate) => {
+    }),
+  );
+
+  const novel = perAngle.flatMap(({ angle, candidates }) =>
+    candidates
+      .filter((candidate) => {
         const key = dedupKey(candidate);
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
-      });
-      const verdicts = await parallel(
-        novel.map((candidate) => async (): Promise<Verified | null> => {
-          const location = primaryLocation(candidate);
-          const judged = await agent(
-            `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
-              `Location: ${formatLocation(candidate)}\n` +
-              `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
-              "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / REFUTED) " +
-              "with evidence quoting the line(s). Default toward REFUTED if you cannot substantiate it. Structured output only.",
-            {
-              phase: "Verify",
-              label: `verify:${location.file.split("/").pop() ?? location.file}`,
-              tools: TOOLS,
-              thinkingLevel: "low",
-              schema: AdvisoryVerdictSchema,
-            },
-          );
-          if (!judged) return null;
-          recordVerdictProgress(progress, candidate, judged);
-          return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
-        }),
-      );
-      return verdicts.filter((value): value is Verified => value !== null);
-    },
+      })
+      .map((candidate) => ({ angle, candidate })),
   );
 
-  const verified = perAngle.flat();
+  phase("Verify");
+  const verdicts = await parallel(
+    novel.map(({ angle, candidate }) => async (): Promise<Verified | null> => {
+      const location = primaryLocation(candidate);
+      const judged = await agent(
+        `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
+          `Location: ${formatLocation(candidate)}\n` +
+          `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
+          "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / REFUTED) " +
+          "with evidence quoting the line(s). Default toward REFUTED if you cannot substantiate it. Structured output only.",
+        {
+          phase: "Verify",
+          label: `verify:${location.file.split("/").pop() ?? location.file}`,
+          tools: TOOLS,
+          thinkingLevel: "low",
+          schema: AdvisoryVerdictSchema,
+        },
+      );
+      if (!judged) return null;
+      recordVerdictProgress(progress, candidate, judged);
+      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
+    }),
+  );
+
+  const verified = verdicts.filter((value): value is Verified => value !== null);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   progress({ type: "counter", key: "verified", label: "verified", value: verified.length });

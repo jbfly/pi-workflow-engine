@@ -22,6 +22,8 @@ export interface LensVerificationPipelineResult<Verified> {
 
 const DEFAULT_ADVISORY_TOOLS = ["read", "bash"];
 
+export type AdvisorySchedulingMode = "pipeline" | "finder-barrier";
+
 export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Verified extends AdvisoryVerified> {
   api: Pick<WorkflowApi, "agent" | "parallel" | "pipeline" | "progress" | "log">;
   lenses: readonly Lens[];
@@ -29,6 +31,7 @@ export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Veri
   tools?: AgentOptions["tools"];
   finderPhase?: string;
   verifierPhase?: string;
+  schedulingMode?: AdvisorySchedulingMode;
   finderPrompt(lens: Lens): string;
   verifierPrompt(candidate: AdvisoryCandidate): string;
   makeVerified(candidate: AdvisoryCandidate, lens: Lens, verdict: AdvisoryVerdict): Verified;
@@ -37,6 +40,16 @@ export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Veri
 export interface AdvisoryBackfillDefaults {
   impact: string;
   recommendation?: string;
+}
+
+interface FoundForLens<Lens> {
+  lens: Lens;
+  candidates: AdvisoryCandidate[];
+}
+
+interface NovelCandidate<Lens> {
+  lens: Lens;
+  candidate: AdvisoryCandidate;
 }
 
 export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Verified extends AdvisoryVerified>(
@@ -49,6 +62,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
     tools = DEFAULT_ADVISORY_TOOLS,
     finderPhase = "Find",
     verifierPhase = "Verify",
+    schedulingMode = "pipeline",
     finderPrompt,
     verifierPrompt,
     makeVerified,
@@ -58,67 +72,84 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
   let dropped = 0;
   let refuted = 0;
 
+  const findForLens = async (lens: Lens): Promise<FoundForLens<Lens>> => {
+    const found = await api.agent(finderPrompt(lens), {
+      phase: finderPhase,
+      label: `find:${lens.label}`,
+      tools,
+      thinkingLevel: "low",
+      schema: AdvisoryCandidatesSchema,
+    });
+    const candidates = (found?.candidates ?? []).slice(0, perLens);
+    rawCandidates += candidates.length;
+    api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: candidates.length });
+    for (const candidate of candidates) {
+      api.progress({
+        type: "lane_item",
+        lane: "Candidates",
+        title: candidate.summary,
+        subtitle: formatLocation(candidate),
+        status: "pending",
+        details: candidate.impact,
+      });
+    }
+    return { lens, candidates };
+  };
+
+  const dedupeFound = (found: FoundForLens<Lens>): NovelCandidate<Lens>[] => {
+    const novel = candidatesNovelToRun(found.candidates, seen).map((candidate) => ({ lens: found.lens, candidate }));
+    const droppedForLens = found.candidates.length - novel.length;
+    if (droppedForLens > 0) {
+      dropped += droppedForLens;
+      api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: droppedForLens });
+      api.log(`find:${found.lens.label}: dropped ${droppedForLens} duplicate candidate(s)`);
+    }
+    return novel;
+  };
+
+  const verifyCandidate = async ({ lens, candidate }: NovelCandidate<Lens>): Promise<Verified | null> => {
+    const location = primaryLocation(candidate);
+    const judged = await api.agent(verifierPrompt(candidate), {
+      phase: verifierPhase,
+      label: `verify:${location.file.split("/").pop() ?? location.file}`,
+      tools,
+      thinkingLevel: "low",
+      schema: AdvisoryVerdictSchema,
+    });
+    if (!judged) return null;
+    recordVerdictProgress(api.progress, candidate, judged, () => {
+      refuted += 1;
+    });
+    return makeVerified(candidate, lens, judged);
+  };
+
+  if (schedulingMode === "finder-barrier") {
+    const found = await api.parallel(lenses.map((lens) => async () => findForLens(lens)));
+    const novel = found.flatMap(dedupeFound);
+    const verdicts = await api.parallel(novel.map((entry) => async () => verifyCandidate(entry)));
+    return { verified: verdicts.filter((value): value is Verified => value !== null), rawCandidates, dropped, refuted };
+  }
+
   const perLensVerified = await api.pipeline(
     lenses,
-    async (_prev, lens) => {
-      const found = await api.agent(finderPrompt(lens), {
-        phase: finderPhase,
-        label: `find:${lens.label}`,
-        tools,
-        thinkingLevel: "low",
-        schema: AdvisoryCandidatesSchema,
-      });
-      const candidates = (found?.candidates ?? []).slice(0, perLens);
-      rawCandidates += candidates.length;
-      api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: candidates.length });
-      for (const candidate of candidates) {
-        api.progress({
-          type: "lane_item",
-          lane: "Candidates",
-          title: candidate.summary,
-          subtitle: formatLocation(candidate),
-          status: "pending",
-          details: candidate.impact,
-        });
-      }
-      return { lens, candidates };
-    },
-    async ({ lens, candidates }) => {
-      const novel = candidates.filter((candidate) => {
-        const key = advisoryDedupKey(candidate);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      const droppedForLens = candidates.length - novel.length;
-      if (droppedForLens > 0) {
-        dropped += droppedForLens;
-        api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: droppedForLens });
-        api.log(`find:${lens.label}: dropped ${droppedForLens} duplicate candidate(s)`);
-      }
-
-      const verdicts = await api.parallel(
-        novel.map((candidate) => async (): Promise<Verified | null> => {
-          const location = primaryLocation(candidate);
-          const judged = await api.agent(verifierPrompt(candidate), {
-            phase: verifierPhase,
-            label: `verify:${location.file.split("/").pop() ?? location.file}`,
-            tools,
-            thinkingLevel: "low",
-            schema: AdvisoryVerdictSchema,
-          });
-          if (!judged) return null;
-          recordVerdictProgress(api.progress, candidate, judged, () => {
-            refuted += 1;
-          });
-          return makeVerified(candidate, lens, judged);
-        }),
-      );
+    async (_prev, lens) => findForLens(lens),
+    async (found) => {
+      const novel = dedupeFound(found);
+      const verdicts = await api.parallel(novel.map((entry) => async () => verifyCandidate(entry)));
       return verdicts.filter((value): value is Verified => value !== null);
     },
   );
 
   return { verified: perLensVerified.flat(), rawCandidates, dropped, refuted };
+}
+
+function candidatesNovelToRun(candidates: readonly AdvisoryCandidate[], seen: Set<string>): AdvisoryCandidate[] {
+  return candidates.filter((candidate) => {
+    const key = advisoryDedupKey(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function primaryLocation(candidate: Pick<AdvisoryCandidate, "locations">): AdvisoryLocation {
