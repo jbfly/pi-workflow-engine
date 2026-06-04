@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 /**
  * A counting semaphore: bounds how many async tasks run at once.
  *
@@ -12,10 +14,12 @@ export class Semaphore {
 
   constructor(private readonly max: number) {}
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
+  async run<T>(fn: () => Promise<T>, options: { onQueueWaitMs?: (durationMs: number) => void } = {}): Promise<T> {
+    const queuedAt = performance.now();
     if (this.active >= this.max) {
       await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
+    options.onQueueWaitMs?.(performance.now() - queuedAt);
     this.active++;
     try {
       return await fn();

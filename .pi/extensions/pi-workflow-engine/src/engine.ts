@@ -3,6 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parallel, pipeline, Semaphore } from "./concurrency.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
+import { createPerfRecorder } from "./perf.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 
@@ -29,6 +30,7 @@ export async function runWorkflow(
       .catch((error: unknown) => progress.log(`inspector failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
+  const perf = createPerfRecorder(options.perf ?? process.env.PI_WORKFLOW_PERF === "1");
   const rc: RunContext = {
     cwd: ctx.cwd,
     hostModel: ctx.model,
@@ -36,6 +38,7 @@ export async function runWorkflow(
     semaphore: new Semaphore(DEFAULT_CONCURRENCY),
     progress,
     signal: ctx.signal,
+    perf,
   };
 
   const agent = ((prompt: string, opts?: AgentOptions) => runAgent(rc, prompt, opts)) as WorkflowApi["agent"];
