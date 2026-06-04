@@ -39,8 +39,23 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>
  *
  * Each stage receives (previousResult, originalItem, index).
  */
+export async function pipeline<Item, A>(
+  items: readonly Item[],
+  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+): Promise<A[]>;
+export async function pipeline<Item, A, B>(
+  items: readonly Item[],
+  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  stage2: (prev: A, item: Item, index: number) => Promise<B>,
+): Promise<B[]>;
+export async function pipeline<Item, A, B, C>(
+  items: readonly Item[],
+  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  stage2: (prev: A, item: Item, index: number) => Promise<B>,
+  stage3: (prev: B, item: Item, index: number) => Promise<C>,
+): Promise<C[]>;
 export async function pipeline(
-  items: unknown[],
+  items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
 ): Promise<unknown[]> {
   return Promise.all(

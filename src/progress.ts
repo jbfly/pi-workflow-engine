@@ -245,8 +245,8 @@ export class ProgressTracker {
       if (running) return running;
     }
     for (let i = this.phases.length - 1; i >= 0; i--) {
-      const any = this.phases[i].agents.find((agent) => agent.label === label);
-      if (any) return any;
+      const matching = this.phases[i].agents.find((agent) => agent.label === label);
+      if (matching) return matching;
     }
     return undefined;
   }
@@ -259,23 +259,6 @@ export class ProgressTracker {
     return undefined;
   }
 
-  private lines(): string[] {
-    const out: string[] = [`⚙ ${this.title}`];
-    for (const phase of this.phases) {
-      if (phase.agents.length === 0 && phase.title === "Workflow") continue;
-      out.push(`  ${phase.title}`);
-      for (const agent of phase.agents) {
-        const icon = agent.status === "done" ? "✓" : agent.status === "failed" ? "✗" : agent.status === "queued" ? "○" : "⏳";
-        const tool = agent.status === "running" && agent.lastTool ? ` · ${agent.lastTool}` : "";
-        const error = agent.status === "failed" && agent.error ? ` · ${agent.error}` : "";
-        out.push(`    ${icon} ${agent.label}${tool}${error}`);
-      }
-    }
-    const counterLine = [...this.counters.values()].map((counter) => `${counter.label}: ${counter.value}`).join(" · ");
-    if (counterLine) out.push(`  ${counterLine}`);
-    for (const line of this.logs.slice(-6)) out.push(`  · ${line}`);
-    return out;
-  }
 
   private render(): void {
     if (!this.ctx.hasUI) return;

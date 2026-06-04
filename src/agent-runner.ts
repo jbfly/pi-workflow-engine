@@ -1,6 +1,6 @@
 import { createAgentSession, defineTool, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentState } from "@earendil-works/pi-agent-core";
 import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
@@ -12,7 +12,7 @@ const FINAL_TOOL = "final_answer";
 /** Shared per-run context threaded into every agent() call. */
 export interface RunContext {
   cwd: string;
-  hostModel: Model<any> | undefined;
+  hostModel: Model<Api> | undefined;
   modelRegistry: ModelRegistry;
   semaphore: Semaphore;
   progress: ProgressTracker;
@@ -25,15 +25,26 @@ function lastAssistantText(state: AgentState): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if ("role" in message && message.role === "assistant") {
-      const content = (message as { content?: Array<{ type: string; text?: string }> }).content ?? [];
-      return content
-        .filter((part) => part.type === "text")
-        .map((part) => part.text ?? "")
-        .join("")
-        .trim();
+      return messageTextContent(message).trim();
     }
   }
   return "";
+}
+
+function messageTextContent(message: unknown): string {
+  if (!hasContentArray(message)) return "";
+  return message.content
+    .filter(isTextPart)
+    .map((part) => part.text)
+    .join("");
+}
+
+function hasContentArray(value: unknown): value is { content: unknown[] } {
+  return typeof value === "object" && value !== null && "content" in value && Array.isArray(value.content);
+}
+
+function isTextPart(value: unknown): value is { type: "text"; text: string } {
+  return typeof value === "object" && value !== null && "type" in value && value.type === "text" && "text" in value && typeof value.text === "string";
 }
 
 /**

@@ -7,8 +7,14 @@ import { BUILTIN_WORKFLOWS } from "./workflows.ts";
 
 function isWorkflowModule(value: unknown): value is WorkflowModule {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as { meta?: { name?: unknown }; default?: unknown };
-  return typeof candidate.meta?.name === "string" && typeof candidate.default === "function";
+  const candidate = value as { meta?: { name?: unknown; description?: unknown; phases?: unknown }; default?: unknown };
+  if (typeof candidate.meta?.name !== "string" || typeof candidate.meta.description !== "string") return false;
+  if (candidate.meta.phases !== undefined && !isWorkflowPhases(candidate.meta.phases)) return false;
+  return typeof candidate.default === "function";
+}
+
+function isWorkflowPhases(value: unknown): value is Array<{ title: string }> {
+  return Array.isArray(value) && value.every((phase) => typeof phase === "object" && phase !== null && typeof (phase as { title?: unknown }).title === "string");
 }
 
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */

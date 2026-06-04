@@ -18,7 +18,7 @@ export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelop
   return typeof value.name === "string" && "result" in value && typeof value.completedAt === "number";
 }
 
-export function isAdvisoryLocation(value: unknown): value is AdvisoryLocation {
+function isAdvisoryLocation(value: unknown): value is AdvisoryLocation {
   if (!isRecord(value)) return false;
   if (typeof value.file !== "string") return false;
   if (value.line !== undefined && typeof value.line !== "number") return false;
@@ -26,7 +26,7 @@ export function isAdvisoryLocation(value: unknown): value is AdvisoryLocation {
   return true;
 }
 
-export function isAdvisoryFinding(value: unknown): value is AdvisoryFinding {
+function isAdvisoryFinding(value: unknown): value is AdvisoryFinding {
   if (!isRecord(value)) return false;
   if (typeof value.summary !== "string") return false;
   if (typeof value.category !== "string") return false;

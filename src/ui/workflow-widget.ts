@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
-import { formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 12;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -15,7 +15,7 @@ export function createWorkflowWidget(snapshotProvider: () => WorkflowProgressSna
   return new LiveWorkflowWidget(snapshotProvider);
 }
 
-export function renderWorkflowWidgetLines(
+function renderWorkflowWidgetLines(
   snapshot: WorkflowProgressSnapshot,
   frame: number,
   width: number,
@@ -123,14 +123,9 @@ function phaseLines(phase: PhaseSnapshot, theme: Theme): string[] {
 }
 
 function agentLine(agent: AgentRowSnapshot, theme: Theme): string {
-  const detailParts: string[] = [];
-  if (agent.toolUses > 0) detailParts.push(`${agent.toolUses} tool${agent.toolUses === 1 ? "" : "s"}`);
-  if (agent.status === "running" && agent.lastTool) detailParts.push(agent.lastTool);
-  if (agent.startedAt !== undefined) detailParts.push(formatDuration((agent.doneAt ?? Date.now()) - agent.startedAt));
-  if (agent.status === "failed" && agent.error) detailParts.push(agent.error);
-
+  const detailParts = agentDetailParts(agent).filter((part) => agent.status !== "queued" || part !== "queued");
   const activity = detailParts.length > 0 ? ` ${theme.fg("dim", `· ${detailParts.join(" · ")}`)}` : "";
-  return `${theme.fg("dim", "│  ")} ${statusIcon(agent.status, theme)} ${theme.fg(agent.status === "running" ? "text" : "muted", agent.label)}${activity}`;
+  return `${theme.fg("dim", "│  ")} ${statusIcon(agent.status, theme)} ${theme.fg(agentLabelColor(agent), agent.label)}${activity}`;
 }
 
 function footerLine(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {

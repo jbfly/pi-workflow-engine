@@ -5,10 +5,17 @@ import {
   AdvisoryReportSchema,
   AdvisoryVerdictSchema,
   type AdvisoryCandidate,
-  type AdvisoryFinding,
-  type AdvisoryLocation,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
+import {
+  backfillAdvisoryFindings,
+  formatEvidence,
+  formatLocation,
+  normalizePath,
+  primaryLocation,
+  recordVerdictProgress,
+  verdictConfidence,
+} from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -50,11 +57,6 @@ const ANGLES: Angle[] = [
 const TOOLS = ["read", "bash"];
 const PER_ANGLE = 6;
 const DIFF_EMBED_CAP = 60_000;
-
-/** Strip leading "./", "a/", "b/" so diff paths and finder-reported paths compare equal. */
-export function normalizePath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
-}
 
 /** Parse a unified diff into the set of added/changed new-file line numbers per file. */
 export function changedLines(diff: string): Map<string, Set<number>> {
@@ -178,8 +180,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const perAngle = await pipeline(
     ANGLES,
     // Stage 1: each angle finds candidates through its single lens.
-    async (_prev, item) => {
-      const angle = item as Angle;
+    async (_prev, angle) => {
       const found = await agent(
         `## Code-review finder — ${angle.label}\n\n${scopeBlock}\n` +
           `Review the change through ONLY this lens:\n${angle.text}\n` +
@@ -216,8 +217,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       return { angle, candidates: bounded };
     },
     // Stage 2: dedup against the shared set, then verify survivors concurrently.
-    async (prev) => {
-      const { angle, candidates } = prev as { angle: Angle; candidates: Candidate[] };
+    async ({ angle, candidates }) => {
       const novel = candidates.filter((candidate) => {
         const key = dedupKey(candidate);
         if (seen.has(key)) return false;
@@ -242,15 +242,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
             },
           );
           if (!judged) return null;
-          progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
-          progress({
-            type: "lane_item",
-            lane: verdictLane(judged.verdict),
-            title: candidate.summary,
-            subtitle: formatLocation(candidate),
-            status: verdictStatus(judged.verdict),
-            details: formatEvidence(judged.evidence),
-          });
+          recordVerdictProgress(progress, candidate, judged);
           return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
         }),
       );
@@ -258,7 +250,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     },
   );
 
-  const verified = (perAngle as Verified[][]).flat();
+  const verified = perAngle.flat();
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
@@ -294,67 +286,9 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   if (!report) return { summary: "Synthesis produced no output.", findings: [], nextSteps: ["Re-run the workflow or inspect verifier evidence manually."], stats };
 
-  const findings = report.findings.map((finding) => {
-    const source = ranked.find((candidate) => sameFinding(candidate, finding));
-    return {
-      ...finding,
-      evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
-      impact: finding.impact || source?.impact || "Impact not restated by synthesis.",
-    };
+  const findings = backfillAdvisoryFindings(report.findings, ranked, {
+    impact: "Impact not restated by synthesis.",
   });
   return { ...report, findings, stats };
 }
 
-function primaryLocation(candidate: Pick<Candidate, "locations">): AdvisoryLocation {
-  return candidate.locations[0] ?? { file: "" };
-}
-
-function formatLocation(candidate: Pick<Candidate, "locations">): string {
-  const location = primaryLocation(candidate);
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
-}
-
-function formatEvidence(evidence: string[]): string {
-  return evidence.join("; ");
-}
-
-function verdictLane(verdict: Verified["verdict"]): string {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "Confirmed";
-    case "PLAUSIBLE":
-      return "Plausible";
-    case "REFUTED":
-      return "Refuted";
-  }
-}
-
-function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "error" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "success";
-    case "PLAUSIBLE":
-      return "warning";
-    case "REFUTED":
-      return "error";
-  }
-}
-
-function verdictConfidence(verdict: Verified["verdict"]): "high" | "medium" | "low" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "high";
-    case "PLAUSIBLE":
-      return "medium";
-    case "REFUTED":
-      return "low";
-  }
-}
-
-function sameFinding(candidate: Verified, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
-  const candidateLocation = primaryLocation(candidate);
-  const findingLocation = primaryLocation(finding);
-  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
-}

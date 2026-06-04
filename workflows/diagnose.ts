@@ -4,11 +4,17 @@ import {
   AdvisoryReportSchema,
   AdvisoryVerdictSchema,
   type AdvisoryCandidate,
-  type AdvisoryFinding,
-  type AdvisoryLocation,
   type AdvisoryReport,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
+import {
+  advisoryDedupKey as dedupKey,
+  backfillAdvisoryFindings,
+  formatEvidence,
+  formatLocation,
+  primaryLocation,
+  recordVerdictProgress,
+} from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -156,18 +162,8 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           },
         );
         if (!judged) return null;
-        progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
-        if (judged.verdict === "REFUTED") {
+        recordVerdictProgress(progress, hypothesis, judged, () => {
           refutedCandidateCount += 1;
-          progress({ type: "counter_delta", key: "refuted", label: "refuted", delta: 1 });
-        }
-        progress({
-          type: "lane_item",
-          lane: verdictLane(judged.verdict),
-          title: hypothesis.summary,
-          subtitle: formatLocation(hypothesis),
-          status: verdictStatus(judged.verdict),
-          details: formatEvidence(judged.evidence),
         });
         return { ...hypothesis, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
       }),
@@ -216,14 +212,9 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun diagnose with a narrower symptom."], stats);
 
-  const findings = report.findings.map((finding) => {
-    const source = ranked.find((candidate) => sameFinding(candidate, finding));
-    return {
-      ...finding,
-      evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
-      impact: finding.impact || source?.impact || "Impact not restated by synthesis.",
-      recommendation: finding.recommendation || source?.recommendation || "Validate this diagnosis with the smallest safe reproduction command.",
-    };
+  const findings = backfillAdvisoryFindings(report.findings, ranked, {
+    impact: "Impact not restated by synthesis.",
+    recommendation: "Validate this diagnosis with the smallest safe reproduction command.",
   });
   return { ...report, findings, stats };
 }
@@ -246,60 +237,8 @@ function dedupe(candidates: Hypothesis[], onDropped: (dropped: number) => void):
   return novel;
 }
 
-function dedupKey(candidate: Candidate): string {
-  const location = primaryLocation(candidate);
-  const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : "file";
-  return `${candidate.category}:${normalizePath(location.file)}:${lineKey}:${candidate.summary.slice(0, 60).toLowerCase()}`;
-}
-
-function primaryLocation(candidate: Pick<Candidate, "locations">): AdvisoryLocation {
-  return candidate.locations[0] ?? { file: "" };
-}
-
-function formatLocation(candidate: Pick<Candidate, "locations">): string {
-  const location = primaryLocation(candidate);
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
-}
-
-function formatEvidence(evidence: string[]): string {
-  return evidence.join("; ");
-}
-
-function normalizePath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
-}
-
 function rank(finding: Verified): number {
   if (finding.verdict === "CONFIRMED") return 0;
   return 1;
 }
 
-function verdictLane(verdict: Verified["verdict"]): string {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "Confirmed";
-    case "PLAUSIBLE":
-      return "Plausible";
-    case "REFUTED":
-      return "Refuted";
-  }
-}
-
-function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "error" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "success";
-    case "PLAUSIBLE":
-      return "warning";
-    case "REFUTED":
-      return "error";
-  }
-}
-
-function sameFinding(candidate: Verified, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
-  const candidateLocation = primaryLocation(candidate);
-  const findingLocation = primaryLocation(finding);
-  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
-}

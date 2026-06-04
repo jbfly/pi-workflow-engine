@@ -63,8 +63,23 @@ export interface WorkflowApi {
   /** Run every thunk concurrently and wait for all (a barrier). */
   parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>;
   /** Run each item through all stages independently — no barrier between stages. */
+  pipeline<Item, A>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  ): Promise<A[]>;
+  pipeline<Item, A, B>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+  ): Promise<B[]>;
+  pipeline<Item, A, B, C>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+    stage3: (prev: B, item: Item, index: number) => Promise<C>,
+  ): Promise<C[]>;
   pipeline(
-    items: unknown[],
+    items: readonly unknown[],
     ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
   ): Promise<unknown[]>;
   /** Start a new phase; subsequent agents group under it in the progress tree. */

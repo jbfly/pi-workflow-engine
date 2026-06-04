@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
-import { formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs";
 
@@ -195,10 +195,9 @@ export class WorkflowInspector {
   }
 
   private agentLine(agent: AgentRowSnapshot, selected: boolean): string {
-    const elapsed = agent.startedAt === undefined ? "queued" : formatDuration((agent.doneAt ?? Date.now()) - agent.startedAt);
-    const details = [`${agent.toolUses} tools`, elapsed];
-    if (agent.lastTool) details.unshift(agent.lastTool);
-    const text = `${statusIcon(agent.status, this.theme)} ${agent.label} ${this.theme.fg("dim", `· ${details.join(" · ")}`)}`;
+    const details = agentDetailParts(agent);
+    const suffix = details.length > 0 ? ` ${this.theme.fg("dim", `· ${details.join(" · ")}`)}` : "";
+    const text = `${statusIcon(agent.status, this.theme)} ${agent.label}${suffix}`;
     return selected ? this.theme.bg("selectedBg", text) : text;
   }
 

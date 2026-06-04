@@ -1,14 +1,16 @@
 import { Type } from "typebox";
 import {
-  AdvisoryCandidatesSchema,
   AdvisoryReportSchema,
-  AdvisoryVerdictSchema,
   type AdvisoryCandidate,
-  type AdvisoryFinding,
-  type AdvisoryLocation,
   type AdvisoryReport,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
+import {
+  backfillAdvisoryFindings,
+  formatEvidence,
+  formatLocation,
+  runLensVerificationPipeline,
+} from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -95,91 +97,37 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
     (args.trim() ? `\n## User instructions (verbatim)\n${args.trim()}\n` : "");
 
-  const seen = new Set<string>();
-
   phase("Find");
-  const perLens = await pipeline(
-    REFACTOR_LENSES,
-    async (_prev, item) => {
-      const lens = item as RefactorLens;
-      const found = await agent(
-        `## Refactor-scout finder — ${lens.label}\n\n${scopeBlock}\n` +
-          "This workflow is advisory-only: do not edit files and do not propose broad rewrites.\n" +
-          `Scout through ONLY this lens:\n${lens.text}\n\n` +
-          `Surface up to ${PER_LENS} candidates. Use category exactly "${lens.category}". ` +
-          "Each candidate must include a one-line summary, locations, impact on maintainability or future correctness, and an optional safe first recommendation. " +
-          "Only include opportunities where a small, reviewable first step is plausible. Structured output only.",
-        { phase: "Find", label: `find:${lens.label}`, tools: TOOLS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
-      );
-      const raw = (found?.candidates ?? []).slice(0, PER_LENS);
-      rawCandidateCount += raw.length;
-      progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
-      for (const candidate of raw) {
-        progress({
-          type: "lane_item",
-          lane: "Candidates",
-          title: candidate.summary,
-          subtitle: formatLocation(candidate),
-          status: "pending",
-          details: candidate.impact,
-        });
-      }
-      return { lens, candidates: raw };
-    },
-    async (prev) => {
-      const { lens, candidates } = prev as { lens: RefactorLens; candidates: Candidate[] };
-      const novel = candidates.filter((candidate) => {
-        const key = dedupKey(candidate);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      const dropped = candidates.length - novel.length;
-      if (dropped > 0) {
-        droppedCandidateCount += dropped;
-        progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
-        log(`find:${lens.label}: dropped ${dropped} duplicate candidate(s)`);
-      }
-      const verdicts = await parallel(
-        novel.map((candidate) => async (): Promise<Verified | null> => {
-          const location = primaryLocation(candidate);
-          const judged = await agent(
-            `## Refactor-scout verifier\n\n${scopeBlock}\n## Candidate\n` +
-              `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
-              `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
-              "Read the relevant files and return CONFIRMED, PLAUSIBLE, or REFUTED. " +
-              "Default toward REFUTED if the opportunity is generic, too broad, not evidenced by code, or lacks a safe first step. " +
-              "Evidence must quote or cite code. Structured output only.",
-            {
-              phase: "Verify",
-              label: `verify:${location.file.split("/").pop() ?? location.file}`,
-              tools: TOOLS,
-              thinkingLevel: "low",
-              schema: AdvisoryVerdictSchema,
-            },
-          );
-          if (!judged) return null;
-          progress({ type: "counter_delta", key: `verdict.${judged.verdict.toLowerCase()}`, label: judged.verdict, delta: 1 });
-          if (judged.verdict === "REFUTED") {
-            refutedCandidateCount += 1;
-            progress({ type: "counter_delta", key: "refuted", label: "refuted", delta: 1 });
-          }
-          progress({
-            type: "lane_item",
-            lane: verdictLane(judged.verdict),
-            title: candidate.summary,
-            subtitle: formatLocation(candidate),
-            status: verdictStatus(judged.verdict),
-            details: formatEvidence(judged.evidence),
-          });
-          return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence, lens };
-        }),
-      );
-      return verdicts.filter((value): value is Verified => value !== null);
-    },
-  );
-
-  const verified = (perLens as Verified[][]).flat();
+  const pipelineResult = await runLensVerificationPipeline({
+    api: { agent, parallel, pipeline, progress, log },
+    lenses: REFACTOR_LENSES,
+    perLens: PER_LENS,
+    finderPrompt: (lens) =>
+      `## Refactor-scout finder — ${lens.label}\n\n${scopeBlock}\n` +
+      "This workflow is advisory-only: do not edit files and do not propose broad rewrites.\n" +
+      `Scout through ONLY this lens:\n${lens.text}\n\n` +
+      `Surface up to ${PER_LENS} candidates. Use category exactly "${lens.category}". ` +
+      "Each candidate must include a one-line summary, locations, impact on maintainability or future correctness, and an optional safe first recommendation. " +
+      "Only include opportunities where a small, reviewable first step is plausible. Structured output only.",
+    verifierPrompt: (candidate) =>
+      `## Refactor-scout verifier\n\n${scopeBlock}\n## Candidate\n` +
+      `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
+      `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
+      "Read the relevant files and return CONFIRMED, PLAUSIBLE, or REFUTED. " +
+      "Default toward REFUTED if the opportunity is generic, too broad, not evidenced by code, or lacks a safe first step. " +
+      "Evidence must quote or cite code. Structured output only.",
+    makeVerified: (candidate, lens, judged): Verified => ({
+      ...candidate,
+      verdict: judged.verdict,
+      evidence: judged.evidence,
+      confidence: judged.confidence,
+      lens,
+    }),
+  });
+  rawCandidateCount += pipelineResult.rawCandidates;
+  droppedCandidateCount += pipelineResult.dropped;
+  refutedCandidateCount += pipelineResult.refuted;
+  const verified = pipelineResult.verified;
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
@@ -213,14 +161,9 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun the workflow with a narrower target."], stats);
 
-  const findings = report.findings.map((finding) => {
-    const source = ranked.find((candidate) => sameFinding(candidate, finding));
-    return {
-      ...finding,
-      evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
-      impact: finding.impact || source?.impact || "Impact not restated by synthesis.",
-      recommendation: finding.recommendation || source?.recommendation || "Choose a small, behavior-preserving refactor first step.",
-    };
+  const findings = backfillAdvisoryFindings(report.findings, ranked, {
+    impact: "Impact not restated by synthesis.",
+    recommendation: "Choose a small, behavior-preserving refactor first step.",
   });
   return { ...report, findings, stats };
 }
@@ -229,61 +172,9 @@ function emptyReport(summary: string, nextSteps: string[], stats: WorkflowRunSta
   return { summary, findings: [], nextSteps, stats };
 }
 
-function primaryLocation(candidate: Pick<Candidate, "locations">): AdvisoryLocation {
-  return candidate.locations[0] ?? { file: "" };
-}
-
-function formatLocation(candidate: Pick<Candidate, "locations">): string {
-  const location = primaryLocation(candidate);
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
-}
-
-function formatEvidence(evidence: string[]): string {
-  return evidence.join("; ");
-}
-
-function dedupKey(candidate: Candidate): string {
-  const location = primaryLocation(candidate);
-  const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : "file";
-  return `${candidate.category}:${normalizePath(location.file)}:${lineKey}:${candidate.summary.slice(0, 60).toLowerCase()}`;
-}
-
-function normalizePath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
-}
-
 function rank(finding: Verified): number {
   const verdictRank = finding.verdict === "CONFIRMED" ? 0 : 1;
   const categoryRank = finding.category === "dead-code" || finding.category === "conventions" ? 2 : 0;
   return verdictRank + categoryRank;
 }
 
-function verdictLane(verdict: Verified["verdict"]): string {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "Confirmed";
-    case "PLAUSIBLE":
-      return "Plausible";
-    case "REFUTED":
-      return "Refuted";
-  }
-}
-
-function verdictStatus(verdict: Verified["verdict"]): "success" | "warning" | "error" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "success";
-    case "PLAUSIBLE":
-      return "warning";
-    case "REFUTED":
-      return "error";
-  }
-}
-
-function sameFinding(candidate: Verified, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
-  const candidateLocation = primaryLocation(candidate);
-  const findingLocation = primaryLocation(finding);
-  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
-}

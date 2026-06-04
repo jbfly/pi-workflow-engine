@@ -18,6 +18,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       phase: "Ping",
       label: "ping",
       tools: [],
+      thinkingLevel: "low",
       schema: Type.Object({
         headline: Type.String({ description: "One word" }),
         summary: Type.String({ description: "One sentence" }),

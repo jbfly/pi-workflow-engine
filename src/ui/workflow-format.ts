@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { WorkflowProgressSnapshot } from "../progress.ts";
+import type { AgentRowSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
 import type { WorkflowLaneItemStatus } from "../types.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
@@ -56,6 +56,20 @@ export function badge(label: string, color: WorkflowThemeColor, theme: Theme): s
 export function truncateDisplay(text: string, width: number): string {
   if (width <= 0) return "";
   return truncateToWidth(text, width);
+}
+
+export function agentDetailParts(agent: AgentRowSnapshot, now = Date.now()): string[] {
+  const parts: string[] = [];
+  if (agent.toolUses > 0) parts.push(`${agent.toolUses} tool${agent.toolUses === 1 ? "" : "s"}`);
+  if (agent.lastTool) parts.push(agent.lastTool);
+  if (agent.startedAt !== undefined) parts.push(formatDuration((agent.doneAt ?? now) - agent.startedAt));
+  else if (agent.status === "queued") parts.push("queued");
+  if (agent.status === "failed" && agent.error) parts.push(agent.error);
+  return parts;
+}
+
+export function agentLabelColor(agent: AgentRowSnapshot): WorkflowThemeColor {
+  return agent.status === "running" ? "text" : "muted";
 }
 
 export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
