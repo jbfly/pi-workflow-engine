@@ -211,9 +211,12 @@ export function verdictConfidence(verdict: AdvisoryVerdict["verdict"]): "high" |
 }
 
 export function sameFinding(candidate: Pick<AdvisoryCandidate, "locations">, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
-  const candidateLocation = primaryLocation(candidate);
-  const findingLocation = primaryLocation(finding);
-  return normalizePath(candidateLocation.file) === normalizePath(findingLocation.file) && candidateLocation.line === findingLocation.line;
+  return findingLocationKey(candidate) === findingLocationKey(finding);
+}
+
+export function findingLocationKey(value: Pick<AdvisoryCandidate, "locations"> | Pick<AdvisoryFinding, "locations">): string {
+  const location = primaryLocation(value);
+  return `${normalizePath(location.file)}:${location.line ?? "file"}`;
 }
 
 export function recordVerdictProgress(
@@ -242,8 +245,14 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
   ranked: readonly Source[],
   defaults: AdvisoryBackfillDefaults,
 ): AdvisoryReport["findings"] {
+  const rankedByLocation = new Map<string, Source>();
+  for (const candidate of ranked) {
+    const key = findingLocationKey(candidate);
+    if (!rankedByLocation.has(key)) rankedByLocation.set(key, candidate);
+  }
+
   return findings.map((finding) => {
-    const source = ranked.find((candidate) => sameFinding(candidate, finding));
+    const source = rankedByLocation.get(findingLocationKey(finding));
     return {
       ...finding,
       evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
