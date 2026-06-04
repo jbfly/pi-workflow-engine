@@ -19,6 +19,7 @@ export interface WorkflowRunStats {
 
 export interface WorkflowRunOptions {
   inspect?: boolean;
+  perf?: boolean;
 }
 
 /** Options for a single `agent()` call. */
