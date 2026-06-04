@@ -23,7 +23,7 @@ const ScopeSchema = Type.Object({
   target: Type.String({ description: "Verbatim target path, module, or focus area being scouted." }),
   files: Type.Array(Type.String(), { description: "Repository-relative files in scope." }),
   summary: Type.String({ description: "One-paragraph summary of the scoped code." }),
-  conventions: Type.Optional(Type.String({ description: "Relevant project conventions from AGENTS.md / CLAUDE.md / docs." })),
+  conventions: Type.Optional(Type.String({ description: "Relevant project conventions from AGENTS.md / docs." })),
 });
 
 interface RefactorLens {
@@ -73,7 +73,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const scope = await agent(
     "Establish the scope for an advisory-only refactor scout. Do not edit files.\n" +
       `Target / focus (verbatim): ${target}\n\n` +
-      "Inspect repository structure, the target path or module, and relevant AGENTS.md / CLAUDE.md conventions. " +
+      "Inspect repository structure, the target path or module, and relevant AGENTS.md / project docs conventions. " +
       "Return the concrete files that should be considered, a short summary, and any conventions that affect refactor advice. " +
       `This workflow will fan out across ${REFACTOR_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
     { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
@@ -179,4 +179,3 @@ function rank(finding: Verified): number {
   const categoryRank = finding.category === "dead-code" || finding.category === "conventions" ? 2 : 0;
   return verdictRank + categoryRank;
 }
-

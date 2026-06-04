@@ -29,7 +29,7 @@ const ScopeSchema = Type.Object({
   diffCommand: Type.String({ description: "Exact git command that produces the review diff" }),
   files: Type.Array(Type.String(), { description: "Changed file paths" }),
   summary: Type.String({ description: "One-paragraph summary of the change" }),
-  conventions: Type.Optional(Type.String({ description: "Relevant CLAUDE.md / project conventions" })),
+  conventions: Type.Optional(Type.String({ description: "Relevant AGENTS.md / project conventions" })),
 });
 
 type Candidate = AdvisoryCandidate;
@@ -120,7 +120,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "If the branch itself is main/master, use `git diff HEAD~1`.\n" +
       "4. Run the chosen command to confirm the diff is non-empty.\n\n" +
       "Then: list the changed files, summarize the change in one paragraph (mention the PR if one was found), " +
-      "and read any relevant CLAUDE.md noting conventions a reviewer should know.\n" +
+      "and read any relevant AGENTS.md or project docs noting conventions a reviewer should know.\n" +
       "Return diffCommand exactly as a reviewer should run it. Structured output only.",
     { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
   );
@@ -290,4 +290,3 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   });
   return { ...report, findings, stats };
 }
-

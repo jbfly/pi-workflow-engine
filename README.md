@@ -2,7 +2,7 @@
 
 # pi-workflow-engine
 
-Claude Code style workflows for the [pi](https://pi.dev) coding agent.
+Programmable multi-agent workflows for the [pi](https://pi.dev) coding agent.
 
 This is not just a way to run a prompt. It is a way to turn an agentic procedure into code: scope the task, fork isolated subagents, fan out across review lenses, validate every handoff with schemas, verify candidate findings, and synthesize one ranked result.
 
@@ -10,7 +10,7 @@ The built-in workflows are advisory: they inspect, fan out, verify, and report. 
 
 ## Why workflows matter
 
-Claude Code popularised a useful pattern: the best agentic coding work is not a single chat turn. It is a loop of context gathering, delegated action, verification, and synthesis. Its docs describe the [agentic loop](https://code.claude.com/docs/en/glossary#agentic-loop), [skills and commands](https://code.claude.com/docs/en/skills), and [subagents](https://code.claude.com/docs/en/glossary#subagent) as composable building blocks for repeatable engineering work.
+The best agentic coding work is rarely a single chat turn. It is a repeatable loop of context gathering, delegated investigation, structured handoffs, verification, and synthesis.
 
 `pi-workflow-engine` brings that shape to pi with static TypeScript workflows:
 
