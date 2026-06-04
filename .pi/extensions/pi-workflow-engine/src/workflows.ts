@@ -15,3 +15,4 @@ import * as perfReview from "../workflows/perf-review.ts";
  * discovery.ts — but the static registry is the always-correct path.)
  */
 export const BUILTIN_WORKFLOWS: WorkflowModule[] = [codeReview, ping, refactorScout, diagnose, perfReview];
+export const BUILTIN_WORKFLOW_FILES = new Set(["code-review.ts", "ping.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"]);

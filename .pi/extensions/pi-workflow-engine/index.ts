@@ -38,6 +38,7 @@ export interface WorkflowInvocation {
   name: string;
   args: string;
   options: WorkflowRunOptions;
+  refreshDiscovery?: boolean;
 }
 
 export function parseWorkflowInvocation(input: string): WorkflowInvocation {
@@ -45,18 +46,23 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
   const space = trimmed.indexOf(" ");
   const name = space === -1 ? trimmed : trimmed.slice(0, space);
   const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const { args, options } = parseWorkflowOptions(rest);
-  return { name, args, options };
+  const { args, options, refreshDiscovery } = parseWorkflowOptions(rest);
+  return { name, args, options, refreshDiscovery };
 }
 
-function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions } {
+function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean } {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   const options: WorkflowRunOptions = {};
+  let refreshDiscovery = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === "--inspect") {
       options.inspect = true;
+      continue;
+    }
+    if (token === "--refresh") {
+      refreshDiscovery = true;
       continue;
     }
     if (token.startsWith("--concurrency=")) {
@@ -81,7 +87,7 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     }
     kept.push(token);
   }
-  return { args: kept.join(" ").trim(), options };
+  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined };
 }
 
 function parseNumericOption(value: string | undefined): number | undefined {
@@ -132,10 +138,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR);
-      const available = [...workflows.keys()].join(", ") || "(none)";
       const direct = parseWorkflowInvocation(args);
+      const { discoverWorkflows } = await loadDiscovery();
+      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery });
+      const available = [...workflows.keys()].join(", ") || "(none)";
       const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
 
       if (!invocation) {

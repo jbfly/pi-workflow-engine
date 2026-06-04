@@ -3,12 +3,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { WorkflowMeta, WorkflowModule } from "./types.ts";
-import { BUILTIN_WORKFLOWS } from "./workflows.ts";
+import type { PerfSink } from "./perf.ts";
+import { BUILTIN_WORKFLOW_FILES, BUILTIN_WORKFLOWS } from "./workflows.ts";
 
 type WorkflowModuleCandidate = {
   meta?: { name?: unknown; description?: unknown; phases?: unknown };
   default?: unknown;
 };
+
+export interface DiscoverWorkflowsOptions {
+  readonly refresh?: boolean;
+  readonly perf?: PerfSink;
+}
+
+const discoveryCache = new Map<string, Map<string, WorkflowModule>>();
 
 function parseWorkflowModule(value: unknown): { module: WorkflowModule } | { reason: string } {
   if (!value || typeof value !== "object") return { reason: "module export is not an object" };
@@ -38,7 +46,7 @@ function isWorkflowPhases(value: unknown): value is Array<{ title: string }> {
 }
 
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
-async function loadDir(dir: string): Promise<WorkflowModule[]> {
+async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set()): Promise<WorkflowModule[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -48,6 +56,7 @@ async function loadDir(dir: string): Promise<WorkflowModule[]> {
 
   const modules: WorkflowModule[] = [];
   for (const name of entries) {
+    if (excludeFiles.has(name)) continue;
     if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
     try {
       const loaded: unknown = await import(pathToFileURL(join(dir, name)).href);
@@ -67,16 +76,37 @@ async function loadDir(dir: string): Promise<WorkflowModule[]> {
  * All available workflows by name. Static registry wins on name collisions, so the
  * bundled example is always the verified one even if a same-named file is dropped in.
  */
-export async function discoverWorkflows(repoDir: string): Promise<Map<string, WorkflowModule>> {
-  const byName = new Map<string, WorkflowModule>();
-  for (const mod of BUILTIN_WORKFLOWS) byName.set(mod.meta.name, mod);
-
-  const dynamic = [
-    ...(await loadDir(join(repoDir, "workflows"))),
-    ...(await loadDir(join(homedir(), ".pi", "agent", "workflows"))),
-  ];
-  for (const mod of dynamic) {
-    if (!byName.has(mod.meta.name)) byName.set(mod.meta.name, mod);
+export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, WorkflowModule>> {
+  const cached = discoveryCache.get(repoDir);
+  if (cached && !options.refresh) {
+    options.perf?.counter("discovery.cache_hit");
+    return new Map(cached);
   }
-  return byName;
+
+  const byName = await timed(options.perf, "discovery.total_ms", async () => {
+    const next = new Map<string, WorkflowModule>();
+    for (const mod of BUILTIN_WORKFLOWS) next.set(mod.meta.name, mod);
+
+    const repoWorkflowDir = join(repoDir, "workflows");
+    const userWorkflowDir = join(homedir(), ".pi", "agent", "workflows");
+    const [repoDynamic, userDynamic] = await Promise.all([
+      timed(options.perf, "discovery.repo_dir_ms", () => loadDir(repoWorkflowDir, BUILTIN_WORKFLOW_FILES)),
+      timed(options.perf, "discovery.user_dir_ms", () => loadDir(userWorkflowDir)),
+    ]);
+
+    for (const mod of repoDynamic) {
+      if (!next.has(mod.meta.name)) next.set(mod.meta.name, mod);
+    }
+    for (const mod of userDynamic) {
+      if (!next.has(mod.meta.name)) next.set(mod.meta.name, mod);
+    }
+    return next;
+  });
+
+  discoveryCache.set(repoDir, byName);
+  return new Map(byName);
+}
+
+async function timed<T>(perf: PerfSink | undefined, name: string, fn: () => Promise<T>): Promise<T> {
+  return perf ? await perf.time(name, fn) : await fn();
 }
