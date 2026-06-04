@@ -162,7 +162,11 @@ Load your working copy through the package manifest without installing it. This 
 pi -e . -p "/workflow ping"
 ```
 
-This repo also includes `.pi/settings.json` for project-local auto-discovery. If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics; remove one source or test with `--no-extensions -e .` when you need a single loaded copy.
+This repo also includes `.pi/settings.json` for project-local auto-discovery. If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics; remove one source or force pi to ignore discovered extensions and load this working copy instead:
+
+```bash
+pi -ne -e .
+```
 
 Add a built-in workflow by creating `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, importing it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `.pi/extensions/pi-workflow-engine/workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
 
