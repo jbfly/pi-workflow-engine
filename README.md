@@ -66,6 +66,8 @@ In a pi session, from inside a git repo with changes:
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
 /workflow code-review --inspect  # open the live workflow inspector
+/workflow code-review --result-viewer     # force the post-review results viewer
+/workflow code-review --no-result-viewer  # skip the post-review viewer prompt
 ```
 
 The host agent can also invoke the `workflow` tool mid-conversation. It accepts either a registered workflow `name` or a one-off inline workflow `script`:
@@ -105,6 +107,21 @@ The bundled review workflow is deliberately shaped like a serious review process
 3. **Gate and dedupe**: bound candidates to changed lines and collapse duplicate findings before spending verifier tokens.
 4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
 5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
+
+After a direct TUI `/workflow code-review` run produces findings, pi asks whether to open an interactive results viewer. Declining, running headless, or using the `workflow` tool still records a readable table-formatted result message. Use `--result-viewer`/`--review-viewer` to force the viewer open, or `--no-result-viewer`/`--no-review-viewer` to skip the prompt.
+
+Viewer controls:
+
+- `↑`/`↓`: move between findings.
+- `space`: tag/untag the current finding.
+- `a`: tag or untag all visible findings.
+- `enter`: expand/collapse the detail pane.
+- `←`/`→` or `pageup`/`pagedown`: scroll detail text.
+- `f`: hand selected findings to the parent agent for minimal local fixes.
+- `c`: comment on selected findings upstream.
+- `q`/`escape`: close the viewer.
+
+GitHub inline comments require a GitHub PR checkout, an authenticated `gh`, and findings with changed-file line numbers. If direct PR context resolution or posting is unavailable, the viewer queues a parent-agent fallback prompt that can use installed GitHub MCP/tools, project skills, or `gh`. Workflow tool invocations remain non-interactive: they do not prompt or open the viewer, and they return table-formatted results only.
 
 The review lenses live in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. That is where your repo's real failure modes belong.
 
