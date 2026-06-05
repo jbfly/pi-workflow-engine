@@ -87,6 +87,8 @@ dynamax inspect this bug with multiple focused agents
 
 The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
 
+The package also ships the `workflow-code-review-actions` skill. When you select review findings in the results viewer, the parent agent can use that skill to either make minimal local fixes or raise GitHub PR inline comments through GitHub MCP/tools or `gh`.
+
 ## Built-in workflows
 
 - `code-review`: Reviews the current branch, open PR, ref range, or target. It looks for correctness bugs and cleanup issues, then independently verifies candidates before ranking them.
