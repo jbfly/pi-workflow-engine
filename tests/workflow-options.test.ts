@@ -33,6 +33,24 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
   assert.deepEqual(invocation.options, { inspect: true, perf: true, concurrency: 4, parallelSubmissionLimit: 9 });
 });
 
+test("parses result viewer workflow options", () => {
+  const forcedOpen = parseWorkflowInvocation("code-review --result-viewer review src only");
+  assert.equal(forcedOpen.name, "code-review");
+  assert.equal(forcedOpen.args, "review src only");
+  assert.deepEqual(forcedOpen.options, { resultViewer: "open" });
+
+  const aliasOpen = parseWorkflowInvocation("code-review --review-viewer review src only");
+  assert.deepEqual(aliasOpen.options, { resultViewer: "open" });
+
+  const forcedSkip = parseWorkflowInvocation("code-review --no-result-viewer --no-review-viewer review src only");
+  assert.equal(forcedSkip.args, "review src only");
+  assert.deepEqual(forcedSkip.options, { resultViewer: "skip" });
+
+  const normalText = parseWorkflowInvocation("code-review result viewer should inspect docs only");
+  assert.equal(normalText.args, "result viewer should inspect docs only");
+  assert.deepEqual(normalText.options, {});
+});
+
 test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {
   const prompt = buildTemporaryWorkflowAuthorPrompt("inspect src and summarize risks");
 

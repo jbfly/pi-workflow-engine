@@ -98,6 +98,14 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       options.perf = true;
       continue;
     }
+    if (token === "--result-viewer" || token === "--review-viewer") {
+      options.resultViewer = "open";
+      continue;
+    }
+    if (token === "--no-result-viewer" || token === "--no-review-viewer") {
+      options.resultViewer = "skip";
+      continue;
+    }
     if (token.startsWith("--concurrency=")) {
       options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
       continue;
