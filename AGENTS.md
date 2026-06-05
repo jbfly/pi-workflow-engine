@@ -17,9 +17,10 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 ## What this extension does
 
-`.pi/extensions/pi-workflow-engine/index.ts` registers two surfaces:
-- `/workflow <name> [args]` — slash command to run a workflow.
-- a `workflow` tool — lets the host agent run a workflow mid-conversation.
+`.pi/extensions/pi-workflow-engine/index.ts` registers three surfaces:
+- `/workflow <name> [args]` — slash command to run a saved workflow.
+- `/dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
+- a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
 A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `meta` + a default `async (api) => result`. The injected `api`:
 - `agent(prompt, { schema?, model?, thinkingLevel?, tools?, label?, phase? })` — runs one subagent; with a typebox `schema` it returns validated structured data, else final text.
@@ -37,6 +38,8 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). `DEFAULT_CONCURRENCY` lives here.
 - `.pi/extensions/pi-workflow-engine/src/progress.ts` — live phase/agent tree via `ctx.ui.setWidget`; stderr breadcrumbs when headless.
 - `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOWS`) plus best-effort dynamic drop-in loading.
+- `.pi/extensions/pi-workflow-engine/src/inline-workflow.ts` — inline workflow compiler (`script` string → `WorkflowModule`) with pure-literal `export const meta` extraction and injected Type schemas.
+- `.pi/extensions/pi-workflow-engine/src/dynamax.ts` — `dynamax` trigger/sticky state and reminder injection.
 - `.pi/extensions/pi-workflow-engine/src/types.ts` — `WorkflowApi` / `WorkflowModule` / `AgentOptions` contracts.
 
 ## Critical non-obvious facts (read before editing)
@@ -44,6 +47,8 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - **Core deps belong in `peerDependencies: "*"`, not `dependencies`/`devDependencies`.** pi bundles `@earendil-works/{pi-ai,pi-agent-core,pi-coding-agent,pi-tui}` and `typebox`. Local `node_modules` copies exist only so `tsc` has types.
 - **At runtime, pi resolves those bare imports to its bundled copies via jiti `virtualModules`** (bun-binary mode: `virtualModules` + `tryNative:false`), intercepting before `node_modules` — so there is no dual-package hazard regardless of what's installed locally.
 - **`jiti` is NOT a virtual module.** A dynamically `import()`-ed drop-in workflow may resolve a *different* `typebox` than pi's bundled one, breaking schema validation. **Therefore guaranteed workflows must be statically imported and registered in `.pi/extensions/pi-workflow-engine/src/workflows.ts`** (they ride pi's jiti and share its typebox). Dynamic discovery is best-effort only.
+- **Inline workflow scripts must never use `import`/dynamic `import()`.** They compile in-process via `AsyncFunction` and receive the extension's injected Type value so `agent({ schema })` preserves pi's bundled TypeBox identity. The `export const meta` block must stay a pure literal so metadata can be validated before untrusted code runs.
+- **Inline workflow bodies must execute in the same VM as the extension.** `agent()` closes over live `RunContext` handles (`Semaphore`, `ProgressTracker`, model registry, abort signal); subprocess/stdin execution cannot access those handles without building a second orchestration system.
 - **Set `thinkingLevel` per `agent()` stage.** Otherwise sub-agents inherit the user's global level (often `xhigh`) and a fan-out becomes very slow and expensive.
 - **`pi install` runs `npm install`** (not bun). `bun.lock` is for local dev only.
 - Never bundle the core packages. Never use `as any` — use typebox `Static<>` and structural narrowing.

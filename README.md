@@ -67,11 +67,22 @@ In a pi session, from inside a git repo with changes:
 /workflow ping                   # quick engine smoke test
 ```
 
-The host agent can also invoke the `workflow` tool mid-conversation:
+The host agent can also invoke the `workflow` tool mid-conversation. It accepts either a registered workflow `name` or a one-off inline workflow `script`:
 
 ```text
 Run the code-review workflow on this PR and use the result before deciding what to fix.
 ```
+
+Opt into dynamic multi-agent orchestration with the literal `dynamax` token, or keep it sticky for the session:
+
+```text
+dynamax inspect this bug with multiple focused agents
+/dynamax on
+/dynamax status
+/dynamax off
+```
+
+`dynamax` is a permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool.
 
 The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
 
@@ -135,12 +146,33 @@ export default async function run({ agent, parallel, phase }: WorkflowApi) {
 }
 ```
 
+Inline workflow scripts use the same primitives, but are passed as a string to the `workflow` tool instead of being saved as files. A minimal inline workflow starts with `export const meta` and uses the injected Type object for schemas:
+
+```ts
+export const meta = {
+  name: "inline-review",
+  description: "One-off focused review workflow.",
+};
+
+export default async function run({ agent, parallel, phase, args }) {
+  phase("Find");
+  const Finding = Type.Object({ summary: Type.String() });
+  const findings = await parallel([
+    () => agent(`Find correctness issues: ${args}`, { schema: Finding, thinkingLevel: "low" }),
+    () => agent(`Find edge cases: ${args}`, { schema: Finding, thinkingLevel: "low" }),
+  ]);
+  return { summary: JSON.stringify(findings) };
+}
+```
+
+Inline v1 rules: no imports, no dynamic `import()`, pure-literal `meta`, schemas must use the injected Type value, and scripts run in-process with the extension's permissions. This v1 path is permissive rather than sandboxed.
+
 Under the hood:
 
 - **Each `agent()` is an in-process pi `AgentSession`** using `createAgentSession` and `SessionManager.inMemory()`.
 - **Structured output is a terminating tool**. The engine registers one tool whose `parameters` is your schema; pi validates the call and the engine captures the args. There is no JSON scraping.
 - **A single global semaphore caps concurrent agents**, so `parallel` and `pipeline` can nest freely while every `agent()` call still respects the run cap.
-- **Two surfaces are registered**: `/workflow <name> [args]` for direct use, and a `workflow` tool for host-agent delegation.
+- **Three surfaces are registered**: `/workflow <name> [args]` for direct use, `/dynamax on|off|status` for sticky orchestration opt-in, and a `workflow` tool for host-agent delegation by `name` or inline `script`.
 
 ## Local development
 
