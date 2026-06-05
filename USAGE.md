@@ -42,6 +42,8 @@ Useful flags:
 
 Use `dynamax` when the built-in workflows are not specific enough and you want the main pi agent to author a temporary workflow for the current question.
 
+Interactive shortcut: run `/workflow` with no arguments, choose `✍ Author temporary one-shot workflow…`, and type a brief. pi will send that brief back to the host agent as a `dynamax` request so it can author and run an inline workflow with the `workflow` tool's `script` argument.
+
 That inline workflow should investigate, fan out, verify, and summarize. It is **not** where code edits happen. If you want changes made, use the workflow result as evidence and then ask pi to edit separately.
 
 One-off examples:

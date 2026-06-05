@@ -60,11 +60,14 @@ async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSi
   return createPerfRecorder(true);
 }
 
+const AUTHOR_TEMP_WORKFLOW_CHOICE = "✍ Author temporary one-shot workflow…";
+
 export interface WorkflowInvocation {
   name: string;
   args: string;
   options: WorkflowRunOptions;
   refreshDiscovery?: boolean;
+  authorBrief?: string;
 }
 
 export function parseWorkflowInvocation(input: string): WorkflowInvocation {
@@ -132,6 +135,19 @@ function compactInlinePreview(script: string | undefined): string {
   return compact.length > 60 ? `${compact.slice(0, 57)}…` : compact;
 }
 
+export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
+  return `dynamax author and run a temporary one-shot inline workflow.
+
+User brief:
+${brief.trim()}
+
+Use the workflow tool with a script argument, not a saved workflow name.
+The script must start with export const meta = { ... } and default-export an async workflow function.
+Use the injected Type object for schemas. Do not import anything or use dynamic import().
+Set thinkingLevel explicitly on each agent() call.
+Do not edit files unless the user explicitly requested edits.`;
+}
+
 export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
@@ -170,9 +186,19 @@ async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
 ): Promise<WorkflowInvocation | undefined> {
-  const choices = [...workflows.values()].map((mod) => `${mod.meta.name} — ${mod.meta.description}`);
+  const choices = [AUTHOR_TEMP_WORKFLOW_CHOICE, ...[...workflows.values()].map((mod) => `${mod.meta.name} — ${mod.meta.description}`)];
   const choice = await ctx.ui.select("Run workflow", choices);
   if (!choice) return undefined;
+
+  if (choice === AUTHOR_TEMP_WORKFLOW_CHOICE) {
+    const brief = await ctx.ui.editor(
+      "Describe temporary workflow",
+      "Goal:\n\nAgents to run:\n- \n\nFinal output should include:\n- summary\n- findings\n- next steps\n",
+    );
+    const trimmed = brief?.trim();
+    if (!trimmed) return undefined;
+    return { name: "", args: "", options: {}, authorBrief: trimmed };
+  }
 
   const separator = choice.indexOf(" — ");
   const name = separator === -1 ? choice : choice.slice(0, separator);
@@ -230,6 +256,11 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
       if (!invocation) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
+        return;
+      }
+
+      if (invocation.authorBrief) {
+        pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(invocation.authorBrief));
         return;
       }
 

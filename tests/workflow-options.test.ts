@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import { parseWorkflowInvocation } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation } from "../.pi/extensions/pi-workflow-engine/index.ts";
 
 test("defaultConcurrency preserves existing formula", () => {
   assert.equal(defaultConcurrency(1), 2);
@@ -31,4 +31,14 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
   assert.equal(invocation.name, "code-review");
   assert.equal(invocation.args, "review src only");
   assert.deepEqual(invocation.options, { inspect: true, perf: true, concurrency: 4, parallelSubmissionLimit: 9 });
+});
+
+test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {
+  const prompt = buildTemporaryWorkflowAuthorPrompt("inspect src and summarize risks");
+
+  assert.match(prompt, /dynamax author and run a temporary one-shot inline workflow/);
+  assert.match(prompt, /inspect src and summarize risks/);
+  assert.match(prompt, /workflow tool with a script argument, not a saved workflow name/);
+  assert.match(prompt, /Use the injected Type object/);
+  assert.match(prompt, /Set thinkingLevel explicitly/);
 });

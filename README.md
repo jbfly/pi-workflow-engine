@@ -83,7 +83,7 @@ dynamax inspect this bug with multiple focused agents
 /dynamax off
 ```
 
-`dynamax` is a permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool.
+`dynamax` is a permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool. In interactive mode, `/workflow` with no arguments also offers `✍ Author temporary one-shot workflow…`; choose it, type a brief, and pi will ask the host agent to author/run a temporary inline workflow.
 
 The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
 
