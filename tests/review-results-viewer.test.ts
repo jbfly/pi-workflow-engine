@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { ReviewResultsViewer } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-viewer.ts";
 import { toReviewIssues, type ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts";
 
 test("viewer toggles selections and returns fix action", () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues("code-review", createReviewReportFixture());
   let renders = 0;
   let result: ReviewIssueSelection | undefined;
   const viewer = new ReviewResultsViewer(issues, "code-review", createTestTheme(), () => renders++, (value) => {
@@ -25,31 +24,35 @@ test("viewer toggles selections and returns fix action", () => {
   assert.deepEqual(result, { action: "fix", issueIds: ["R001"] });
 });
 
-function createReport(): AdvisoryReport {
+test("viewer keyboard paths cover select all close fix and comment outcomes", () => {
+  const issues = toReviewIssues("code-review", createReviewReportFixture());
+
+  const closeViewer = createViewer(issues);
+  closeViewer.viewer.handleInput(" ");
+  closeViewer.viewer.handleInput("q");
+  assert.deepEqual(closeViewer.result, { action: "close", issueIds: ["R001"] });
+
+  const commentViewer = createViewer(issues);
+  commentViewer.viewer.handleInput("a");
+  commentViewer.viewer.handleInput("c");
+  assert.deepEqual(commentViewer.result, { action: "comment", issueIds: ["R001", "R002", "R003"] });
+
+  const fixViewer = createViewer(issues);
+  fixViewer.viewer.handleInput("a");
+  fixViewer.viewer.handleInput("a");
+  fixViewer.viewer.handleInput("f");
+  assert.equal(fixViewer.result, undefined);
+  assert.match(fixViewer.viewer.render(90).join("\n"), /Select at least one finding/);
+});
+
+function createViewer(issues: ReturnType<typeof toReviewIssues>): { readonly viewer: ReviewResultsViewer; readonly result: ReviewIssueSelection | undefined } {
+  let result: ReviewIssueSelection | undefined;
   return {
-    summary: "Review complete.",
-    findings: [
-      {
-        summary: "Off-by-one in retry loop.",
-        category: "bug",
-        severity: "high",
-        confidence: "high",
-        locations: [{ file: "src/app.ts", line: 10, symbol: "retry" }],
-        evidence: ["line 10 increments before checking the limit"],
-        impact: "A final retry is skipped.",
-        recommendation: "Change the loop boundary after adding a regression test.",
-      },
-      {
-        summary: "Documentation omits the new flag.",
-        category: "cleanup",
-        severity: "low",
-        confidence: "medium",
-        locations: [{ file: "README.md" }],
-        evidence: ["README lists old flags only"],
-        impact: "Users may miss the new workflow option.",
-        recommendation: "Document the flag in the workflow usage section.",
-      },
-    ],
-    nextSteps: ["Inspect src/app.ts retry loop"],
+    viewer: new ReviewResultsViewer(issues, "code-review", createTestTheme(), () => {}, (value) => {
+      result = value;
+    }),
+    get result() {
+      return result;
+    },
   };
 }

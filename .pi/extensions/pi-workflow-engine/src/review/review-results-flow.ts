@@ -5,7 +5,7 @@ import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./r
 import { ReviewResultsViewer } from "./review-results-viewer.ts";
 
 export type ReviewResultsPresentationDecision =
-  | { readonly kind: "send"; readonly reason: "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" }
+  | { readonly kind: "send"; readonly reason: "tool-invocation" | "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" }
   | { readonly kind: "ask"; readonly report: AdvisoryWorkflowResult; readonly issues: readonly ReviewIssue[]; readonly findingCount: number }
   | { readonly kind: "open"; readonly report: AdvisoryWorkflowResult; readonly issues: readonly ReviewIssue[]; readonly findingCount: number };
 
@@ -15,6 +15,11 @@ export interface ReviewResultsDecisionInput {
   readonly mode?: string;
   readonly hasUI: boolean;
   readonly resultViewer?: WorkflowRunOptions["resultViewer"];
+  readonly invocationKind?: "command" | "tool";
+}
+
+export interface ReviewResultsViewerContext {
+  readonly ui: Pick<ExtensionCommandContext["ui"], "confirm" | "custom">;
 }
 
 export function extensionContextMode(ctx: ExtensionCommandContext): string | undefined {
@@ -23,6 +28,7 @@ export function extensionContextMode(ctx: ExtensionCommandContext): string | und
 }
 
 export function decideReviewResultsPresentation(input: ReviewResultsDecisionInput): ReviewResultsPresentationDecision {
+  if (input.invocationKind === "tool") return { kind: "send", reason: "tool-invocation" };
   if (input.workflowName !== "code-review") return { kind: "send", reason: "not-code-review" };
   if (!isAdvisoryReport(input.result)) return { kind: "send", reason: "not-advisory" };
   if (input.result.findings.length === 0) return { kind: "send", reason: "no-findings" };
@@ -40,7 +46,7 @@ export function reviewResultsConfirmMessage(findingCount: number): string {
 }
 
 export async function maybeShowReviewResultsViewer(
-  ctx: ExtensionCommandContext,
+  ctx: ReviewResultsViewerContext,
   decision: ReviewResultsPresentationDecision,
 ): Promise<ReviewIssueSelection | undefined> {
   if (decision.kind === "send") return undefined;

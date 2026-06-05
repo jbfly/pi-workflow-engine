@@ -9,8 +9,8 @@ export interface RenderIssuesTableOptions {
 
 const DEFAULT_MAX_ROWS = 12;
 const ID_WIDTH = 4;
-const SEVERITY_WIDTH = 4;
-const CONFIDENCE_WIDTH = 4;
+const SEVERITY_WIDTH = 6;
+const CONFIDENCE_WIDTH = 6;
 const CATEGORY_WIDTH = 8;
 const LOCATION_WIDTH = 30;
 const SUMMARY_WIDTH = 58;

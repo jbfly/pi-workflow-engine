@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { renderIssuesTable } from "../.pi/extensions/pi-workflow-engine/src/review/review-format.ts";
 import { formatIssueLocation, isCommentableIssue, toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts";
 
 test("normalizes advisory findings into stable review issues", () => {
   const report = createReport();
@@ -38,6 +38,15 @@ test("renders compact advisory findings table", () => {
   assert.match(table, /src\/app\.ts:10 \(retry\)/);
   assert.match(table, /… 1 more finding\(s\)/);
   assert.doesNotMatch(table, /overflowing the fixed table width\./);
+});
+
+test("renders fixture severities and truncates long summaries", () => {
+  const table = renderIssuesTable(toReviewIssues("code-review", createReviewReportFixture()), createTestTheme(), { maxRows: 3 });
+
+  assert.match(table, /high/);
+  assert.match(table, /medium/);
+  assert.match(table, /low/);
+  assert.doesNotMatch(table, /without requiring a real terminal/);
 });
 
 function createReport(): AdvisoryReport {

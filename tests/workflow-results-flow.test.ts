@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { decideReviewResultsPresentation, reviewResultsConfirmMessage } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
+import {
+  decideReviewResultsPresentation,
+  maybeShowReviewResultsViewer,
+  reviewResultsConfirmMessage,
+  type ReviewResultsViewerContext,
+} from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
+import type { ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
 
 test("direct code-review asks for viewer only when findings exist", () => {
   const ask = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
@@ -27,6 +33,56 @@ test("result viewer options can force open or skip", () => {
 
   const skip = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "skip" });
   assert.deepEqual(skip, { kind: "send", reason: "disabled" });
+});
+
+test("declined and non-TUI result flow never opens custom viewer", async () => {
+  let customCalls = 0;
+  const ctx: ReviewResultsViewerContext = {
+    ui: {
+      async confirm() {
+        return false;
+      },
+      async custom<T>() {
+        customCalls++;
+        return { action: "close", issueIds: [] } as T;
+      },
+    },
+  };
+
+  const ask = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
+  const declined = await maybeShowReviewResultsViewer(ctx, ask);
+  assert.equal(declined, undefined);
+  assert.equal(customCalls, 0);
+
+  const nonTui = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "rpc", hasUI: true });
+  const skipped = await maybeShowReviewResultsViewer(ctx, nonTui);
+  assert.equal(skipped, undefined);
+  assert.equal(customCalls, 0);
+});
+
+test("forced-open direct code-review flow opens viewer and returns action before result message can be recorded", async () => {
+  let customCalls = 0;
+  const ctx: ReviewResultsViewerContext = {
+    ui: {
+      async confirm() {
+        throw new Error("forced open should not prompt");
+      },
+      async custom<T>() {
+        customCalls++;
+        return { action: "close", issueIds: ["R001"] } as T;
+      },
+    },
+  };
+  const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "open" });
+  const action = await maybeShowReviewResultsViewer(ctx, decision);
+
+  assert.equal(customCalls, 1);
+  assert.deepEqual(action, { action: "close", issueIds: ["R001"] } satisfies ReviewIssueSelection);
+});
+
+test("workflow tool execution path does not prompt or open a viewer", () => {
+  const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, invocationKind: "tool" });
+  assert.deepEqual(decision, { kind: "send", reason: "tool-invocation" });
 });
 
 function createReport(): AdvisoryReport {
