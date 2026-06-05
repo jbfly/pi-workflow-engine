@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
+import { registerDynamax } from "./src/dynamax.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -174,6 +175,8 @@ async function sendWorkflowResult(
 }
 
 export default function workflowEngine(pi: ExtensionAPI): void {
+  registerDynamax(pi);
+
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
     if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme);
@@ -211,8 +214,15 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     name: "workflow",
     label: "Workflow",
     description:
-      "Run a named or inline multi-agent workflow (fan-out → verify → synthesize) and return its structured result. Use for thorough reviews or audits.",
+      "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize) and returns its structured result.",
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
+    promptGuidelines: [
+      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
+      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, perf-review, or ping.",
+      "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
+      "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
+      "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
+    ],
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),
       script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of script or name." })),

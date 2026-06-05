@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export interface DynamaxState {
   sticky: boolean;
@@ -62,6 +63,52 @@ export function appendDynamaxSystemReminder(systemPrompt: string, state: Dynamax
 export function appendDynamaxContextReminder(messages: AgentMessage[], state: DynamaxState): AgentMessage[] {
   if (!state.sticky) return messages;
   return [...messages, createDynamaxContextMessage()];
+}
+
+export function registerDynamax(pi: ExtensionAPI): void {
+  const state = createDynamaxState();
+
+  pi.on("input", (event) => {
+    if (event.source === "extension") return { action: "continue" };
+    if (hasDynamaxToken(event.text)) markDynamaxOneShot(state);
+    return { action: "continue" };
+  });
+
+  pi.on("before_agent_start", (event) => {
+    const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, state);
+    if (systemPrompt === event.systemPrompt) return undefined;
+    return { systemPrompt };
+  });
+
+  pi.on("context", (event) => {
+    const messages = appendDynamaxContextReminder(event.messages, state);
+    if (messages === event.messages) return undefined;
+    return { messages };
+  });
+
+  pi.registerCommand("dynamax", {
+    description: "Toggle dynamax workflow orchestration opt-in: /dynamax on|off|status",
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
+      if (action === "on") {
+        setDynamaxSticky(state, true);
+        ctx.ui.notify("dynamax workflow orchestration is on for this session", "info");
+        return;
+      }
+      if (action === "off") {
+        clearDynamax(state);
+        ctx.ui.notify("dynamax workflow orchestration is off", "info");
+        return;
+      }
+      if (action === "status") {
+        const sticky = state.sticky ? "on" : "off";
+        const oneShot = state.oneShotPending ? "; one-shot opt-in pending" : "";
+        ctx.ui.notify(`dynamax sticky mode is ${sticky}${oneShot}`, "info");
+        return;
+      }
+      ctx.ui.notify("Usage: /dynamax on|off|status", "warning");
+    },
+  });
 }
 
 function createDynamaxContextMessage(): AgentMessage {
