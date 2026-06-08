@@ -68,14 +68,18 @@ export async function runWorkflow(
   try {
     return await perf.time("workflow.total_ms", () => mod.default(api));
   } finally {
-    const snapshot = perf.snapshot();
-    if (resolvedOptions.perf) {
-      resolvedOptions.onPerfSnapshot?.(snapshot);
-      progress.log(formatPerfSummary(snapshot));
+    try {
+      const snapshot = perf.snapshot();
+      if (resolvedOptions.perf) {
+        resolvedOptions.onPerfSnapshot?.(snapshot);
+        progress.log(formatPerfSummary(snapshot));
+      }
+      progress.done();
+      resolvedOptions.onProgressSnapshot?.(progress.snapshot());
+    } finally {
+      unlinkContextAbortSignal();
+      unlinkOptionAbortSignal();
     }
-    unlinkContextAbortSignal();
-    unlinkOptionAbortSignal();
-    progress.done();
   }
 }
 

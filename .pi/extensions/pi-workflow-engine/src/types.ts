@@ -2,6 +2,7 @@ import type { Static, TSchema } from "typebox";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Pipeline } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
+import type { WorkflowProgressSnapshot } from "./progress.ts";
 
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
@@ -30,6 +31,8 @@ export interface WorkflowRunOptions {
   perfRecorder?: PerfSink;
   /** Called with the final performance snapshot when perf is enabled. */
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
+  /** Called with the final completed progress snapshot after live workflow UI teardown. */
+  onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void;
 }
 
 /** Options for a single `agent()` call. */
