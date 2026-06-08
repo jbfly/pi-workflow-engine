@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
@@ -89,7 +89,7 @@ export class WorkflowInspector {
     const count = Math.max(1, this.itemCount(this.currentSection()));
     lines.push(
       this.row(
-        `${th.fg("dim", `${body.length} lines · ${pct} · ${selected}/${count}`)} ${th.fg("dim", "· tab sections · ↑↓ select · enter expand · q/esc close")}`,
+        `${th.fg("dim", `${body.length} lines · ${pct} · ${selected}/${count}`)} ${th.fg("dim", "· tab sections · ↑↓ select · enter expand/collapse · q/esc close")}`,
         inner,
       ),
     );
@@ -208,7 +208,7 @@ export class WorkflowInspector {
     return lines.length > 0 ? lines : [{ text: `    ${this.theme.fg("dim", "No details yet.")}` }];
   }
 
-  private findingLines(snapshot: WorkflowProgressSnapshot, _width: number): InspectorLine[] {
+  private findingLines(snapshot: WorkflowProgressSnapshot, width: number): InspectorLine[] {
     const lines: InspectorLine[] = [];
     let selectableIndex = -1;
     const overflowByLane = new Map(snapshot.laneOverflow);
@@ -221,7 +221,7 @@ export class WorkflowInspector {
         const key = `finding:${lane}:${index}:${item.createdAt}`;
         const selected = this.currentSection() === "Findings" && this.selected.Findings === selectableIndex;
         lines.push({ text: this.findingLine(item, selected), selectable: true, key });
-        if (this.expanded.has(key) && item.details) lines.push({ text: `    ${this.theme.fg("dim", item.details)}` });
+        if (this.expanded.has(key)) lines.push(...this.findingDetails(item, width));
       });
     }
     return lines.length > 0 ? lines : [{ text: this.theme.fg("dim", "No findings lanes yet.") }];
@@ -231,6 +231,24 @@ export class WorkflowInspector {
     const subtitle = item.subtitle ? ` ${this.theme.fg("accent", item.subtitle)}` : "";
     const text = `${statusIcon(item.status, this.theme)} ${item.title}${subtitle}`;
     return selected ? this.theme.bg("selectedBg", text) : text;
+  }
+
+  private findingDetails(item: WorkflowLaneItemSnapshot, width: number): InspectorLine[] {
+    return [
+      ...this.detailFieldLines("Title", item.title, width, "text"),
+      ...this.detailFieldLines("Location", item.subtitle || "(unknown)", width, "accent"),
+      ...this.detailFieldLines("Status", item.status, width, "muted"),
+      ...this.detailFieldLines("Details", item.details || "(no details)", width, "muted"),
+    ];
+  }
+
+  private detailFieldLines(label: string, value: string, width: number, color: Parameters<Theme["fg"]>[0]): InspectorLine[] {
+    const plainPrefix = `  ${label}: `;
+    const prefix = `    ${this.theme.fg("dim", `${label}:`)} `;
+    const continuation = `    ${" ".repeat(visibleWidth(`${label}: `))}`;
+    const wrapped = wrapTextWithAnsi(this.theme.fg(color, value), Math.max(10, width - visibleWidth(plainPrefix) - 4));
+    if (wrapped.length === 0) return [{ text: prefix }];
+    return wrapped.map((line, index) => ({ text: `${index === 0 ? prefix : continuation}${line}` }));
   }
 
   private logLines(snapshot: WorkflowProgressSnapshot): InspectorLine[] {

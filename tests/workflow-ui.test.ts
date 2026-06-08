@@ -73,6 +73,49 @@ test("workflow inspector renders a completed retained snapshot", () => {
   assert.match(rendered, /src\/app\.ts:10/);
 });
 
+test("workflow inspector expands findings as formatted multi-line details", () => {
+  const now = Date.now();
+  const snapshot: WorkflowProgressSnapshot = {
+    title: "code-review",
+    startedAt: now - 1_000,
+    doneAt: now,
+    currentPhase: "Verify",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [
+      [
+        "Confirmed",
+        [
+          {
+            lane: "Confirmed",
+            title: "Expanded finding",
+            subtitle: "src/app.ts:10",
+            status: "success",
+            details: "line 10 increments before checking the retry limit and should wrap into formatted detail lines",
+            createdAt: now,
+          },
+        ],
+      ],
+    ],
+    laneOverflow: [],
+    logs: [],
+  };
+  const tui = { requestRender() {}, terminal: { rows: 24, columns: 100 } } as Pick<TUI, "requestRender" | "terminal">;
+  const inspector = new WorkflowInspector(() => snapshot, tui, createTestTheme(), () => {});
+
+  inspector.handleInput("\t");
+  inspector.handleInput("\t");
+  inspector.handleInput("\r");
+  const rendered = inspector.render(100).join("\n");
+
+  assert.match(rendered, /Title:.*Expanded finding/);
+  assert.match(rendered, /Location:.*src\/app\.ts:10/);
+  assert.match(rendered, /Status:.*success/);
+  assert.match(rendered, /Details:.*line 10 increments/);
+  assert.match(rendered, /enter expand\/collapse/);
+});
+
 test("workflow widget renders bounded rows for large snapshots", () => {
   const theme = createTestTheme();
   const snapshot = {
