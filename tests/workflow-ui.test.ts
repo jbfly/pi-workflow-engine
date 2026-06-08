@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { isAdvisoryReport, renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 
@@ -28,6 +30,47 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   const wide = truncateDisplay("漢字かな", 4);
   assert.ok(visibleWidth(wide) <= 4);
+});
+
+test("workflow inspector renders a completed retained snapshot", () => {
+  const now = Date.now();
+  const snapshot: WorkflowProgressSnapshot = {
+    title: "code-review",
+    startedAt: now - 1_000,
+    doneAt: now,
+    currentPhase: "Synthesize",
+    phases: [],
+    counters: [],
+    summary: [["kept", 1]],
+    lanes: [
+      [
+        "Confirmed",
+        [
+          {
+            lane: "Confirmed",
+            title: "Stored finding",
+            subtitle: "src/app.ts:10",
+            status: "success",
+            details: "line 10 proves the retained inspector can render completed workflow details",
+            createdAt: now,
+          },
+        ],
+      ],
+    ],
+    laneOverflow: [],
+    logs: ["workflow completed"],
+  };
+  const tui = { requestRender() {}, terminal: { rows: 24, columns: 100 } } as Pick<TUI, "requestRender" | "terminal">;
+  const inspector = new WorkflowInspector(() => snapshot, tui, createTestTheme(), () => {});
+
+  inspector.handleInput("\t");
+  inspector.handleInput("\t");
+  const rendered = inspector.render(100).join("\n");
+
+  assert.match(rendered, /Workflow Inspector/);
+  assert.match(rendered, /code-review/);
+  assert.match(rendered, /Stored finding/);
+  assert.match(rendered, /src\/app\.ts:10/);
 });
 
 test("workflow widget renders bounded rows for large snapshots", () => {
