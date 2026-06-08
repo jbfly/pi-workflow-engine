@@ -22,7 +22,10 @@ The built-in workflows are advisory. They inspect, verify, and report; they do *
 Useful flags:
 
 ```text
-/workflow code-review --inspect          # show live inspector
+/workflow code-review --inspect          # show the live inspector while the run is active
+/workflow-inspector                      # reopen the last completed workflow inspector
+/workflow code-review --result-viewer    # explicitly open the findings viewer
+/workflow code-review --review-viewer    # alias for --result-viewer
 /workflow code-review --concurrency=4    # cap concurrent subagents
 /workflow code-review --refresh          # rediscover newly added workflow files
 ```
@@ -75,7 +78,9 @@ Workflow results are rendered in pi with:
 - next steps;
 - run stats when available.
 
-During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view.
+During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow-inspector` if you want to bring the last completed inspector back up afterward.
+
+Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding.
 
 ## Author a saved workflow
 

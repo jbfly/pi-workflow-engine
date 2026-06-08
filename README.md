@@ -65,9 +65,11 @@ In a pi session, from inside a git repo with changes:
 /workflow refactor-scout src/    # find safe refactor opportunities
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
-/workflow code-review --inspect  # open the live workflow inspector
-/workflow code-review --result-viewer     # force the post-review results viewer
-/workflow code-review --no-result-viewer  # skip the post-review viewer prompt
+/workflow code-review --inspect  # open the live workflow inspector while the run is active
+/workflow-inspector              # reopen the last completed workflow inspector
+/workflow code-review --result-viewer     # explicitly open the post-review results viewer
+/workflow code-review --review-viewer     # alias for --result-viewer
+/workflow code-review --no-result-viewer  # explicitly keep the post-review viewer closed
 ```
 
 The host agent can also invoke the `workflow` tool mid-conversation. It accepts either a registered workflow `name` or a one-off inline workflow `script`:
@@ -108,11 +110,12 @@ The bundled review workflow is deliberately shaped like a serious review process
 4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
 5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
 
-After a direct TUI `/workflow code-review` run produces findings, pi asks whether to open an interactive results viewer. Declining, running headless, or using the `workflow` tool still records a readable table-formatted result message. Use `--result-viewer`/`--review-viewer` to force the viewer open, or `--no-result-viewer`/`--no-review-viewer` to skip the prompt.
+After a direct TUI `/workflow code-review` run produces findings, pi records a readable table-formatted result message without asking whether to open another surface. Use `--result-viewer`/`--review-viewer` when you want the interactive findings viewer to open immediately, or `--no-result-viewer`/`--no-review-viewer` when a script or alias should explicitly keep it closed. Use `/workflow-inspector` after a run to reopen the last completed workflow inspector.
 
 Viewer controls:
 
 - `↑`/`↓`: move between findings.
+- `1`-`9`: jump directly to a visible finding.
 - `space`: tag/untag the current finding.
 - `a`: tag or untag all visible findings.
 - `enter`: expand/collapse the detail pane.
