@@ -266,7 +266,7 @@ async function sendWorkflowResult(
     result,
     mode: extensionContextMode(ctx),
     hasUI: ctx.hasUI,
-    resultViewer: options.resultViewer ?? "ask",
+    resultViewer: options.resultViewer,
     invocationKind: "command",
   });
   const reviewAction = await maybeShowReviewResultsViewer(ctx, reviewDecision);

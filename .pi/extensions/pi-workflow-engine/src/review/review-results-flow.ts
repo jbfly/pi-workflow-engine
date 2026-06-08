@@ -5,8 +5,10 @@ import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./r
 import { ReviewResultsViewer } from "./review-results-viewer.ts";
 
 export type ReviewResultsPresentationDecision =
-  | { readonly kind: "send"; readonly reason: "tool-invocation" | "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" }
-  | { readonly kind: "ask"; readonly report: AdvisoryWorkflowResult; readonly issues: readonly ReviewIssue[]; readonly findingCount: number }
+  | {
+      readonly kind: "send";
+      readonly reason: "tool-invocation" | "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" | "not-requested";
+    }
   | { readonly kind: "open"; readonly report: AdvisoryWorkflowResult; readonly issues: readonly ReviewIssue[]; readonly findingCount: number };
 
 export interface ReviewResultsDecisionInput {
@@ -19,7 +21,7 @@ export interface ReviewResultsDecisionInput {
 }
 
 export interface ReviewResultsViewerContext {
-  readonly ui: Pick<ExtensionCommandContext["ui"], "confirm" | "custom">;
+  readonly ui: Pick<ExtensionCommandContext["ui"], "custom">;
 }
 
 export function extensionContextMode(ctx: ExtensionCommandContext): string | undefined {
@@ -35,26 +37,17 @@ export function decideReviewResultsPresentation(input: ReviewResultsDecisionInpu
   if (input.resultViewer === "skip") return { kind: "send", reason: "disabled" };
   if (input.mode !== "tui" || !input.hasUI) return { kind: "send", reason: "not-tui" };
 
-  const issues = toReviewIssues(input.workflowName, input.result);
-  const findingCount = issues.length;
-  if (input.resultViewer === "open") return { kind: "open", report: input.result, issues, findingCount };
-  return { kind: "ask", report: input.result, issues, findingCount };
-}
+  if (input.resultViewer !== "open") return { kind: "send", reason: "not-requested" };
 
-export function reviewResultsConfirmMessage(findingCount: number): string {
-  return `Review produced ${findingCount} finding(s). Open the interactive results viewer?`;
+  const issues = toReviewIssues(input.workflowName, input.result);
+  return { kind: "open", report: input.result, issues, findingCount: issues.length };
 }
 
 export async function maybeShowReviewResultsViewer(
   ctx: ReviewResultsViewerContext,
   decision: ReviewResultsPresentationDecision,
 ): Promise<ReviewIssueSelection | undefined> {
-  if (decision.kind === "send") return undefined;
-  let open = decision.kind === "open";
-  if (decision.kind === "ask") {
-    open = await ctx.ui.confirm("Open review results?", reviewResultsConfirmMessage(decision.findingCount));
-  }
-  if (!open) return undefined;
+  if (decision.kind !== "open") return undefined;
 
   return await ctx.ui.custom<ReviewIssueSelection>(
     (tui, theme, _keybindings, done) => new ReviewResultsViewer(decision.issues, "code-review", theme, () => tui.requestRender(), done),

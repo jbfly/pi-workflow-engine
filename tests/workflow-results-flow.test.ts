@@ -4,18 +4,13 @@ import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/ad
 import {
   decideReviewResultsPresentation,
   maybeShowReviewResultsViewer,
-  reviewResultsConfirmMessage,
   type ReviewResultsViewerContext,
 } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
 import type { ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
 
-test("direct code-review asks for viewer only when findings exist", () => {
-  const ask = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
-  assert.equal(ask.kind, "ask");
-  if (ask.kind !== "ask") throw new Error("expected ask decision");
-  assert.equal(ask.findingCount, 1);
-  assert.deepEqual(ask.issues.map((issue) => issue.id), ["R001"]);
-  assert.equal(reviewResultsConfirmMessage(ask.findingCount), "Review produced 1 finding(s). Open the interactive results viewer?");
+test("direct code-review sends results unless viewer is explicitly requested", () => {
+  const notRequested = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
+  assert.deepEqual(notRequested, { kind: "send", reason: "not-requested" });
 
   const empty = decideReviewResultsPresentation({ workflowName: "code-review", result: { ...createReport(), findings: [] }, mode: "tui", hasUI: true });
   assert.deepEqual(empty, { kind: "send", reason: "no-findings" });
@@ -35,13 +30,10 @@ test("result viewer options can force open or skip", () => {
   assert.deepEqual(skip, { kind: "send", reason: "disabled" });
 });
 
-test("declined and non-TUI result flow never opens custom viewer", async () => {
+test("not-requested and non-TUI result flow never opens custom viewer", async () => {
   let customCalls = 0;
   const ctx: ReviewResultsViewerContext = {
     ui: {
-      async confirm() {
-        return false;
-      },
       async custom<T>() {
         customCalls++;
         return { action: "close", issueIds: [] } as T;
@@ -49,12 +41,12 @@ test("declined and non-TUI result flow never opens custom viewer", async () => {
     },
   };
 
-  const ask = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
-  const declined = await maybeShowReviewResultsViewer(ctx, ask);
-  assert.equal(declined, undefined);
+  const notRequested = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
+  const notOpened = await maybeShowReviewResultsViewer(ctx, notRequested);
+  assert.equal(notOpened, undefined);
   assert.equal(customCalls, 0);
 
-  const nonTui = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "rpc", hasUI: true });
+  const nonTui = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "rpc", hasUI: true, resultViewer: "open" });
   const skipped = await maybeShowReviewResultsViewer(ctx, nonTui);
   assert.equal(skipped, undefined);
   assert.equal(customCalls, 0);
@@ -64,9 +56,6 @@ test("forced-open direct code-review flow opens viewer and returns action before
   let customCalls = 0;
   const ctx: ReviewResultsViewerContext = {
     ui: {
-      async confirm() {
-        throw new Error("forced open should not prompt");
-      },
       async custom<T>() {
         customCalls++;
         return { action: "close", issueIds: ["R001"] } as T;

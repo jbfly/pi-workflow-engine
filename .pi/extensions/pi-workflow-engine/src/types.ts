@@ -24,7 +24,7 @@ export interface WorkflowRunOptions {
   perf?: boolean;
   concurrency?: number;
   parallelSubmissionLimit?: number;
-  resultViewer?: "ask" | "open" | "skip";
+  resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
   signal?: AbortSignal;
   /** Internal recorder override for command/tool invocation timing. */
