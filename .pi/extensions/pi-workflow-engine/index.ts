@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
+import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { registerDynamax } from "./src/dynamax.ts";
@@ -87,17 +87,51 @@ export interface LastWorkflowInspection {
   readonly snapshot: WorkflowProgressSnapshot;
 }
 
+export interface ActiveWorkflowInspection {
+  readonly name: string;
+  readonly args: string;
+  readonly startedAt: number;
+  readonly snapshot: () => WorkflowProgressSnapshot;
+}
+
 let lastWorkflowInspection: LastWorkflowInspection | undefined;
+let activeWorkflowInspection: ActiveWorkflowInspection | undefined;
 
 export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
   return lastWorkflowInspection;
 }
 
-export async function openWorkflowInspector(ctx: ExtensionCommandContext, inspection: LastWorkflowInspection): Promise<void> {
+export function getActiveWorkflowInspection(): ActiveWorkflowInspection | undefined {
+  return activeWorkflowInspection;
+}
+
+export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
   await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => new WorkflowInspector(() => inspection.snapshot, tui, theme, () => done(undefined)),
+    (tui, theme, _keybindings, done) => new WorkflowInspector(snapshotGetter(inspection), tui, theme, () => done(undefined)),
     { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
   );
+}
+
+async function openAvailableWorkflowInspector(ctx: ExtensionContext): Promise<void> {
+  if (!ctx.hasUI) {
+    ctx.ui.notify("Workflow inspector requires the TUI", "warning");
+    return;
+  }
+  const inspection = activeWorkflowInspection ?? lastWorkflowInspection;
+  if (!inspection) {
+    ctx.ui.notify("No workflow inspector is available yet", "warning");
+    return;
+  }
+  await openWorkflowInspector(ctx, inspection);
+}
+
+function snapshotGetter(inspection: LastWorkflowInspection | ActiveWorkflowInspection): () => WorkflowProgressSnapshot {
+  const snapshot = inspection.snapshot;
+  return typeof snapshot === "function" ? snapshot : () => snapshot;
+}
+
+function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {
+  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot() };
 }
 
 export interface WorkflowInvocation {
@@ -263,11 +297,22 @@ export async function sendWorkflowResult(
 ): Promise<void> {
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
+  let liveInspection: ActiveWorkflowInspection | undefined;
   const result = await runWorkflow(ctx, mod, args, {
     ...options,
     perf: options.perf ?? perfRecorder !== undefined,
     perfRecorder,
     resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
+    onProgressSource(source) {
+      if (source) {
+        liveInspection = bindActiveWorkflowInspection(name, args, source);
+        activeWorkflowInspection = liveInspection;
+      } else if (activeWorkflowInspection === liveInspection) {
+        activeWorkflowInspection = undefined;
+        liveInspection = undefined;
+      }
+      options.onProgressSource?.(source);
+    },
     onPerfSnapshot(snapshot) {
       perfSnapshot = snapshot;
       options.onPerfSnapshot?.(snapshot);
@@ -297,7 +342,7 @@ export async function sendWorkflowResult(
 }
 
 export default function workflowEngine(pi: ExtensionAPI): void {
-  registerDynamax(pi);
+  registerDynamax(pi, undefined, { openInspector: openAvailableWorkflowInspector });
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
@@ -306,23 +351,14 @@ export default function workflowEngine(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("workflow:inspector", {
-    description: "Open the last completed workflow inspector",
+    description: "Open the current or last workflow inspector",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const trimmed = args.trim();
       if (trimmed && trimmed !== "last") {
         ctx.ui.notify("Usage: /workflow:inspector [last]", "warning");
         return;
       }
-      if (!ctx.hasUI) {
-        ctx.ui.notify("Workflow inspector requires the TUI", "warning");
-        return;
-      }
-      const inspection = lastWorkflowInspection;
-      if (!inspection) {
-        ctx.ui.notify("No completed workflow inspector is available yet", "warning");
-        return;
-      }
-      await openWorkflowInspector(ctx, inspection);
+      await openAvailableWorkflowInspector(ctx);
     },
   });
 
@@ -402,6 +438,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       if (request.kind === "error") return invalidWorkflowInvocationResult();
 
       const runOptions: WorkflowRunOptions = {
+        inspect: ctx.hasUI,
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         perf: params.perf,
@@ -437,18 +474,29 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
       const { runWorkflow } = await loadEngine();
       let perfSnapshot: PerfSnapshot | undefined;
-      const result = await runWorkflow(ctx, mod, params.args ?? "", {
+      let liveInspection: ActiveWorkflowInspection | undefined;
+      const resultArgs = params.args ?? "";
+      const result = await runWorkflow(ctx, mod, resultArgs, {
         ...runOptions,
         perf: runOptions.perf ?? perfRecorder !== undefined,
         perfRecorder,
         resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
+        onProgressSource(source) {
+          if (source) {
+            liveInspection = bindActiveWorkflowInspection(resultName, resultArgs, source);
+            activeWorkflowInspection = liveInspection;
+          } else if (activeWorkflowInspection === liveInspection) {
+            activeWorkflowInspection = undefined;
+            liveInspection = undefined;
+          }
+        },
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
         },
         onProgressSnapshot: (snapshot) => {
           // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
           // previously uninspectable, unlike the /workflow command path.
-          lastWorkflowInspection = { name: resultName, args: params.args ?? "", completedAt: snapshot.doneAt ?? Date.now(), snapshot };
+          lastWorkflowInspection = { name: resultName, args: resultArgs, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);

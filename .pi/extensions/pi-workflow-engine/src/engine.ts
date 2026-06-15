@@ -46,6 +46,8 @@ export async function runWorkflow(
 ): Promise<unknown> {
   const resolvedOptions = resolveWorkflowRunOptions(options);
   const progress = new ProgressTracker(ctx, mod.meta.name);
+  const progressSource = { snapshot: () => progress.snapshot() };
+  resolvedOptions.onProgressSource?.(progressSource);
   if (resolvedOptions.inspect && ctx.hasUI) {
     void ctx.ui
       .custom<void>(
@@ -90,6 +92,7 @@ export async function runWorkflow(
       progress.done();
       resolvedOptions.onProgressSnapshot?.(progress.snapshot());
     } finally {
+      resolvedOptions.onProgressSource?.(undefined);
       unlinkContextAbortSignal();
       unlinkOptionAbortSignal();
     }

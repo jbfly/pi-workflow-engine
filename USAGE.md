@@ -1,9 +1,9 @@
 # Usage
 
-`pi-workflow-engine` adds multi-agent workflows to pi. Most users only need two surfaces:
+`pi-workflow-engine` adds multi-agent workflows to pi. Most users only need these surfaces:
 
 - `/workflow <name> [args]` to run a saved workflow directly.
-- `/workflow:*` commands for related actions such as inspector reopening and dynamax sticky mode.
+- `/workflow:*` commands for related actions such as inspector reopening and Dynamax control.
 - `dynamax` as a literal one-shot opt-in token when you want the host agent to author a one-off inline workflow for investigation/review.
 
 ## Run a workflow
@@ -24,7 +24,7 @@ Useful flags:
 
 ```text
 /workflow code-review --inspect          # show the live inspector while the run is active
-/workflow:inspector                      # reopen the last completed workflow inspector
+/workflow:inspector                      # open the current or last workflow inspector
 /workflow code-review --result-viewer    # explicitly open the findings viewer
 /workflow code-review --review-viewer    # alias for --result-viewer
 /workflow code-review --concurrency=4    # cap concurrent subagents
@@ -58,7 +58,7 @@ dynamax create a one-off workflow to compare the parser and tests before we chan
 dynamax use parallel agents to review this design and report the risks
 ```
 
-Sticky for the session:
+Sticky mode and inspector shortcut:
 
 ```text
 /workflow:dynamax on
@@ -66,7 +66,25 @@ Sticky for the session:
 /workflow:dynamax status
 ```
 
-With dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow. It can still call a saved workflow by `name` when one already fits.
+The workflow inspector is also registered as a first-class shortcut shown by `/hotkeys`; the default is `ctrl+shift+m`. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
+
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact TUI status with `/workflow:dynamax on|off` and the inspector shortcut; off mode clears that status line.
+
+When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
+
+Configure the inspector shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:
+
+```json
+{
+  "shortcuts": {
+    "inspector": "ctrl+shift+x"
+  }
+}
+```
+
+Set `"inspector": null` to disable the shortcut while keeping `/workflow:dynamax` and `/workflow:inspector` available.
+
+With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow. It can still call a saved workflow by `name` when one already fits.
 
 ## Workflow results
 

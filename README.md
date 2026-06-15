@@ -66,7 +66,7 @@ In a pi session, from inside a git repo with changes:
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
 /workflow code-review --inspect  # open the live workflow inspector while the run is active
-/workflow:inspector              # reopen the last completed workflow inspector
+/workflow:inspector              # open the current or last workflow inspector
 /workflow code-review --result-viewer     # explicitly open the post-review results viewer
 /workflow code-review --review-viewer     # alias for --result-viewer
 /workflow code-review --no-result-viewer  # explicitly keep the post-review viewer closed
@@ -87,7 +87,7 @@ dynamax inspect this bug with multiple focused agents
 /workflow:dynamax off
 ```
 
-`dynamax` is a permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool. In interactive mode, `/workflow` with no arguments also offers `✍ Author temporary one-shot workflow…`; choose it, type a brief, and pi will ask the host agent to author/run a temporary inline workflow.
+`dynamax` is a one-shot permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool. Dynamax workflow-tool runs open the live workflow inspector in the TUI while they run. `/workflow:dynamax on|off|status` controls sticky mode, and `/hotkeys` shows the registered inspector shortcut (`ctrl+shift+m` by default). Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact status with the relevant commands while active and leave no persistent UI when cleared. In interactive mode, `/workflow` with no arguments also offers `✍ Author temporary one-shot workflow…`; choose it, type a brief, and pi will ask the host agent to author/run a temporary inline workflow.
 
 The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
 
@@ -110,7 +110,7 @@ The bundled review workflow is deliberately shaped like a serious review process
 4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
 5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
 
-After a direct TUI `/workflow code-review` run produces findings, pi records a readable table-formatted result message without asking whether to open another surface. Use `--result-viewer`/`--review-viewer` when you want the interactive findings viewer to open immediately, or `--no-result-viewer`/`--no-review-viewer` when a script or alias should explicitly keep it closed. Use `/workflow:inspector` after a run to reopen the last completed workflow inspector.
+After a direct TUI `/workflow code-review` run produces findings, pi records a readable table-formatted result message without asking whether to open another surface. Use `--result-viewer`/`--review-viewer` when you want the interactive findings viewer to open immediately, or `--no-result-viewer`/`--no-review-viewer` when a script or alias should explicitly keep it closed. Use `/workflow:inspector` during or after a run to open the workflow inspector.
 
 Viewer controls:
 
@@ -194,7 +194,7 @@ Under the hood:
 - **Each `agent()` is an in-process pi `AgentSession`** using `createAgentSession` and `SessionManager.inMemory()`.
 - **Structured output is a terminating tool**. The engine registers one tool whose `parameters` is your schema; pi validates the call and the engine captures the args. There is no JSON scraping.
 - **A single global semaphore caps concurrent agents**, so `parallel` and `pipeline` can nest freely while every `agent()` call still respects the run cap.
-- **Three surfaces are registered**: `/workflow <name> [args]` for direct use, grouped workflow commands such as `/workflow:dynamax on|off|status` and `/workflow:inspector`, and a `workflow` tool for host-agent delegation by `name` or inline `script`.
+- **Three surfaces are registered**: `/workflow <name> [args]` for direct use, grouped workflow commands such as `/workflow:dynamax [on|off|status]` and `/workflow:inspector`, and a `workflow` tool for host-agent delegation by `name` or inline `script`.
 
 ## Local development
 

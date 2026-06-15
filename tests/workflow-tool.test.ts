@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import workflowEngine, { getLastWorkflowInspection, inlineCompileErrorResult, normalizeWorkflowToolRequest } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
@@ -17,23 +18,41 @@ interface CapturedTool {
   ): Promise<unknown>;
 }
 
+interface CapturedShortcut {
+  description?: string;
+  handler(ctx: ExtensionContext): unknown | Promise<unknown>;
+}
+
+interface CapturedWorkflowExtension {
+  tool: CapturedTool;
+  shortcut: CapturedShortcut | undefined;
+}
+
 /** Register the extension against a no-op `pi` and hand back its `workflow` tool. */
-function captureWorkflowTool(): CapturedTool {
-  let captured: CapturedTool | undefined;
+function captureWorkflowExtension(): CapturedWorkflowExtension {
+  let capturedTool: CapturedTool | undefined;
+  let capturedShortcut: CapturedShortcut | undefined;
   const fakePi = {
     on: () => {},
     registerCommand: () => {},
+    registerShortcut: (_key: string, shortcut: CapturedShortcut) => {
+      capturedShortcut = shortcut;
+    },
     registerMessageRenderer: () => {},
     registerTool: (tool: unknown) => {
       const candidate = tool as CapturedTool;
-      if (candidate.name === "workflow") captured = candidate;
+      if (candidate.name === "workflow") capturedTool = candidate;
     },
     sendMessage: () => {},
     sendUserMessage: () => {},
   } as unknown as ExtensionAPI;
   workflowEngine(fakePi);
-  if (!captured) throw new Error("workflow tool was not registered");
-  return captured;
+  if (!capturedTool) throw new Error("workflow tool was not registered");
+  return { tool: capturedTool, shortcut: capturedShortcut };
+}
+
+function captureWorkflowTool(): CapturedTool {
+  return captureWorkflowExtension().tool;
 }
 
 const HEADLESS_CTX = {
@@ -43,6 +62,57 @@ const HEADLESS_CTX = {
   hasUI: false,
   signal: undefined,
 } as unknown as ExtensionContext;
+
+function createTuiContext(): { ctx: ExtensionContext; customCalls: () => number; customRenders: () => readonly string[][] } {
+  let customCallCount = 0;
+  const customRenderLines: string[][] = [];
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  } as ExtensionContext["ui"]["theme"];
+  const tui = {
+    terminal: { columns: 100, rows: 30 },
+    requestRender: () => {},
+  } as Pick<TUI, "terminal" | "requestRender">;
+  const ctx = {
+    cwd: process.cwd(),
+    model: undefined,
+    modelRegistry: { find: () => undefined },
+    hasUI: true,
+    signal: undefined,
+    ui: {
+      theme,
+      custom: async <T>(
+        factory: (
+          tuiArg: TUI,
+          themeArg: ExtensionContext["ui"]["theme"],
+          keybindings: never,
+          done: (result: T) => void,
+        ) => Component | Promise<Component>,
+      ): Promise<T> => {
+        customCallCount++;
+        let completed: T | undefined;
+        const component = await factory(tui as TUI, theme, undefined as never, (result) => {
+          completed = result;
+        });
+        customRenderLines.push(component.render(100));
+        return completed as T;
+      },
+      setWidget: () => {},
+      setStatus: () => {},
+    },
+  } as unknown as ExtensionContext;
+  return { ctx, customCalls: () => customCallCount, customRenders: () => customRenderLines };
+}
+
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
 
 function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
   const agent = (async (_prompt: string, opts?: AgentOptions) => (opts?.schema ? { ok: true } : "agent text")) as WorkflowApi["agent"];
@@ -132,4 +202,45 @@ export default async function run({ phase }) {
     inspection?.snapshot.phases.some((phase) => phase.title === "Solo"),
     `expected a "Solo" phase in the captured snapshot, got ${JSON.stringify(inspection?.snapshot.phases.map((p) => p.title))}`,
   );
+});
+
+test("a TUI tool-invoked workflow opens the live inspector", async () => {
+  const tool = captureWorkflowTool();
+  const { ctx, customCalls } = createTuiContext();
+  const script = `
+export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
+export default async function run({ phase }) {
+  phase("Live");
+  return { ok: true };
+}
+`;
+
+  await tool.execute("call-2", { script }, undefined, () => {}, ctx);
+
+  assert.equal(customCalls(), 1);
+  const inspection = getLastWorkflowInspection();
+  assert.equal(inspection?.name, "inspect-live-probe");
+});
+
+test("the inspector shortcut opens the active workflow inspector while the workflow tool is running", async () => {
+  const { tool, shortcut } = captureWorkflowExtension();
+  const { ctx, customCalls, customRenders } = createTuiContext();
+  if (!shortcut) throw new Error("expected Dynamax inspector shortcut");
+  const script = `
+export const meta = { name: "inspect-live-shortcut-probe", description: "Live inspector shortcut probe" };
+export default async function run({ phase }) {
+  phase("Shortcut Live");
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  return { ok: true };
+}
+`;
+
+  const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
+  await waitUntil(() => customCalls() >= 1, "initial live inspector");
+
+  await shortcut.handler(ctx);
+
+  assert.equal(customCalls(), 2);
+  assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
+  await running;
 });

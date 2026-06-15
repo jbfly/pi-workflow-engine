@@ -1,12 +1,27 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
+import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./dynamax-shortcuts.ts";
 
 export interface DynamaxState {
   sticky: boolean;
   oneShotPending: boolean;
+  turnActive: boolean;
+}
+
+export interface DynamaxRuntime {
+  state: DynamaxState;
+  runningWorkflow?: string;
+}
+
+export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
+export interface DynamaxRegistrationOptions {
+  openInspector?: (ctx: ExtensionContext) => Promise<void> | void;
 }
 
 export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/i;
+export const DYNAMAX_STATUS_KEY = "dynamax";
+export const DYNAMAX_WIDGET_KEY = "workflow-dynamax";
 
 export const DYNAMAX_REMINDER = `
 ## dynamax workflow opt-in
@@ -23,7 +38,24 @@ Inline workflow rules:
 const DYNAMAX_CONTEXT_CUSTOM_TYPE = "workflow-dynamax-reminder";
 
 export function createDynamaxState(): DynamaxState {
-  return { sticky: false, oneShotPending: false };
+  return { sticky: false, oneShotPending: false, turnActive: false };
+}
+
+export function createDynamaxRuntime(): DynamaxRuntime {
+  return { state: createDynamaxState() };
+}
+
+export function dynamaxSessionKey(ctx: Pick<ExtensionContext, "sessionManager">): string {
+  return ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId();
+}
+
+export function getDynamaxRuntime(store: DynamaxRuntimeStore, ctx: Pick<ExtensionContext, "sessionManager">): DynamaxRuntime {
+  const key = dynamaxSessionKey(ctx);
+  const existing = store.get(key);
+  if (existing) return existing;
+  const runtime = createDynamaxRuntime();
+  store.set(key, runtime);
+  return runtime;
 }
 
 export function hasDynamaxToken(text: string): boolean {
@@ -36,12 +68,16 @@ export function markDynamaxOneShot(state: DynamaxState): void {
 
 export function setDynamaxSticky(state: DynamaxState, sticky: boolean): void {
   state.sticky = sticky;
-  if (!sticky) state.oneShotPending = false;
+  if (!sticky) {
+    state.oneShotPending = false;
+    state.turnActive = false;
+  }
 }
 
 export function clearDynamax(state: DynamaxState): void {
   state.sticky = false;
   state.oneShotPending = false;
+  state.turnActive = false;
 }
 
 export function consumeDynamaxOneShot(state: DynamaxState): boolean {
@@ -51,12 +87,32 @@ export function consumeDynamaxOneShot(state: DynamaxState): boolean {
 }
 
 export function isDynamaxActive(state: DynamaxState): boolean {
-  return state.sticky || state.oneShotPending;
+  return state.sticky || state.oneShotPending || state.turnActive;
+}
+
+export function describeDynamaxState(state: DynamaxState): string {
+  const sticky = state.sticky ? "on" : "off";
+  const oneShot = state.oneShotPending ? "pending" : "clear";
+  const turn = state.turnActive ? "; active for current turn" : "";
+  return `sticky ${sticky}; one-shot ${oneShot}${turn}`;
+}
+
+export function dynamaxWidgetLine(state: DynamaxState, shortcut: KeyId | null, runningWorkflow?: string): string {
+  const modes = [
+    runningWorkflow ? `running ${runningWorkflow}` : undefined,
+    state.sticky ? "sticky on" : undefined,
+    !state.sticky && state.turnActive ? "active this turn" : undefined,
+    state.oneShotPending ? "one-shot pending" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  const mode = modes.join(" + ") || "off";
+  const inspectorHint = shortcut ? `${shortcut} inspector` : "/workflow:inspector";
+  return `dynamax: ${mode} | /workflow:dynamax on|off | ${inspectorHint}`;
 }
 
 export function appendDynamaxSystemReminder(systemPrompt: string, state: DynamaxState): string {
-  if (!isDynamaxActive(state)) return systemPrompt;
+  if (!state.sticky && !state.oneShotPending) return systemPrompt;
   state.oneShotPending = false;
+  state.turnActive = true;
   return `${systemPrompt}\n\n${DYNAMAX_REMINDER.trim()}`;
 }
 
@@ -65,50 +121,172 @@ export function appendDynamaxContextReminder(messages: AgentMessage[], state: Dy
   return [...messages, createDynamaxContextMessage()];
 }
 
-export function registerDynamax(pi: ExtensionAPI): void {
-  const state = createDynamaxState();
+export function registerDynamax(
+  pi: ExtensionAPI,
+  shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts(),
+  options: DynamaxRegistrationOptions = {},
+): void {
+  const runtimes: DynamaxRuntimeStore = new Map();
+  const openInspector =
+    options.openInspector ??
+    ((ctx: ExtensionContext): void => {
+      ctx.ui.notify("No workflow inspector is available yet", "warning");
+    });
+  const refreshIfVisible = (ctx: ExtensionContext): void => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    if (isDynamaxActive(runtime.state) || runtime.runningWorkflow) {
+      updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    }
+  };
 
-  pi.on("input", (event) => {
+  pi.on("session_start", (_event, ctx) => {
+    updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx), shortcuts);
+  });
+
+  pi.on("session_shutdown", (_event, ctx) => {
+    clearDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx));
+  });
+
+  pi.on("input", (event, ctx) => {
     if (event.source === "extension") return { action: "continue" };
-    if (hasDynamaxToken(event.text)) markDynamaxOneShot(state);
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    if (hasDynamaxToken(event.text)) {
+      markDynamaxOneShot(runtime.state);
+      updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    }
     return { action: "continue" };
   });
 
-  pi.on("before_agent_start", (event) => {
-    const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, state);
+  pi.on("before_agent_start", (event, ctx) => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, runtime.state);
     if (systemPrompt === event.systemPrompt) return undefined;
+    updateDynamaxSurfaces(ctx, runtime, shortcuts);
     return { systemPrompt };
   });
 
-  pi.on("context", (event) => {
-    const messages = appendDynamaxContextReminder(event.messages, state);
+  pi.on("agent_start", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("message_start", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("message_update", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("message_end", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("turn_end", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("agent_end", (_event, ctx) => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    runtime.runningWorkflow = undefined;
+    if (!runtime.state.sticky) runtime.state.turnActive = false;
+    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+  });
+
+  pi.on("tool_execution_start", (event, ctx) => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    if (event.toolName === "workflow") {
+      runtime.runningWorkflow = workflowLabel(event.args);
+    }
+    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    return undefined;
+  });
+
+  pi.on("tool_execution_update", (_event, ctx) => {
+    refreshIfVisible(ctx);
+  });
+
+  pi.on("tool_execution_end", (event, ctx) => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    if (event.toolName === "workflow") {
+      runtime.runningWorkflow = undefined;
+    }
+    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    return undefined;
+  });
+
+  pi.on("context", (event, ctx) => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    const messages = appendDynamaxContextReminder(event.messages, runtime.state);
     if (messages === event.messages) return undefined;
     return { messages };
   });
 
+  if (shortcuts.inspector) {
+    pi.registerShortcut(shortcuts.inspector, {
+      description: "Open workflow inspector",
+      handler: async (ctx) => {
+        await openInspector(ctx);
+      },
+    });
+  }
+
   pi.registerCommand("workflow:dynamax", {
-    description: "Toggle dynamax workflow orchestration opt-in: /workflow:dynamax on|off|status",
+    description: "Toggle Dynamax workflow orchestration: /workflow:dynamax [on|off|status]",
     handler: async (args, ctx) => {
+      const runtime = getDynamaxRuntime(runtimes, ctx);
       const action = args.trim().toLowerCase();
+      if (action === "") {
+        ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}. Usage: /workflow:dynamax [on|off|status]`, "info");
+        return;
+      }
       if (action === "on") {
-        setDynamaxSticky(state, true);
-        ctx.ui.notify("dynamax workflow orchestration is on for this session", "info");
+        setDynamaxSticky(runtime.state, true);
+        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        ctx.ui.notify("Dynamax workflow orchestration is on for this session", "info");
         return;
       }
       if (action === "off") {
-        clearDynamax(state);
-        ctx.ui.notify("dynamax workflow orchestration is off", "info");
+        clearDynamax(runtime.state);
+        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        ctx.ui.notify("Dynamax workflow orchestration is off", "info");
         return;
       }
       if (action === "status") {
-        const sticky = state.sticky ? "on" : "off";
-        const oneShot = state.oneShotPending ? "; one-shot opt-in pending" : "";
-        ctx.ui.notify(`dynamax sticky mode is ${sticky}${oneShot}`, "info");
+        ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}`, "info");
         return;
       }
-      ctx.ui.notify("Usage: /workflow:dynamax on|off|status", "warning");
+      ctx.ui.notify("Usage: /workflow:dynamax [on|off|status]", "warning");
     },
   });
+}
+
+export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime, shortcuts: DynamaxShortcuts): void {
+  if (!ctx.hasUI) return;
+  ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
+  ctx.ui.setStatus(DYNAMAX_WIDGET_KEY, undefined);
+  if (!isDynamaxActive(runtime.state) && !runtime.runningWorkflow) {
+    clearDynamaxSurfaces(ctx, runtime);
+    return;
+  }
+
+  const status = dynamaxWidgetLine(runtime.state, shortcuts.inspector, runtime.runningWorkflow);
+  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, status);
+}
+
+export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {
+  if (!ctx.hasUI) return;
+  ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
+  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, undefined);
+  ctx.ui.setStatus(DYNAMAX_WIDGET_KEY, undefined);
+}
+
+function workflowLabel(args: unknown): string {
+  if (!isRecord(args)) return "workflow";
+  const name = args.name;
+  if (typeof name === "string" && name.trim()) return name.trim();
+  const script = args.script;
+  if (typeof script === "string" && script.trim()) return "inline workflow";
+  return "workflow";
 }
 
 function createDynamaxContextMessage(): AgentMessage {
@@ -120,4 +298,8 @@ function createDynamaxContextMessage(): AgentMessage {
     details: { dynamax: true, sticky: true },
     timestamp: Date.now(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

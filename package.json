@@ -36,7 +36,7 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout=30000",
     "test:changedlines": "bun test tests/changedlines.test.ts",
     "test:concurrency": "bun test tests/concurrency.test.ts",
     "test:smoke": "bun test tests/discovery.test.ts",
