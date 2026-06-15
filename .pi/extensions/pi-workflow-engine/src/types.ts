@@ -36,8 +36,14 @@ export interface WorkflowRunOptions {
   resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
   /** Called with the final performance snapshot when perf is enabled. */
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
+  /** Called with the live progress source while a workflow is running, then undefined when it ends. */
+  onProgressSource?: (source: WorkflowProgressSource | undefined) => void;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */
   onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void;
+}
+
+export interface WorkflowProgressSource {
+  snapshot(): WorkflowProgressSnapshot;
 }
 
 /** Options for a single `agent()` call. */
