@@ -208,7 +208,7 @@ bun run typecheck
 bun run test
 ```
 
-The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
+Typechecking uses TypeScript Native Preview (`tsgo`) through `bun run typecheck`. The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
 
 ### Performance controls and benchmarks
 
