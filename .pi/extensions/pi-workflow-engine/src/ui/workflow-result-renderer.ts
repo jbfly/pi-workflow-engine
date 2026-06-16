@@ -5,6 +5,7 @@ import type { PerfAggregate } from "../perf.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues, type ReviewContext } from "../review/review-issues.ts";
 import { formatCount } from "./workflow-format.ts";
+import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "../usage.ts";
 
 export interface WorkflowPerfDetails {
   readonly enabled: boolean;
@@ -16,6 +17,7 @@ export interface WorkflowResultEnvelope {
   name: string;
   result: unknown;
   completedAt: number;
+  usage?: WorkflowUsageSnapshot;
   perf?: WorkflowPerfDetails;
 }
 
@@ -59,25 +61,27 @@ export function isAdvisoryReport(value: unknown): value is AdvisoryWorkflowResul
   return true;
 }
 
-export function renderWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme): Component {
+export function renderWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): Component {
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  box.addChild(new Text(renderWorkflowResultText(name, result, expanded, theme), 0, 0));
+  box.addChild(new Text(renderWorkflowResultText(name, result, expanded, theme, usage), 0, 0));
   return box;
 }
 
-export function renderWorkflowResultText(name: string, result: unknown, expanded: boolean, theme: Theme): string {
+export function renderWorkflowResultText(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
   if (isAdvisoryReport(result)) {
-    return renderAdvisoryResult(name, result, expanded, theme);
+    return renderAdvisoryResult(name, result, expanded, theme, usage);
   }
-  return renderGenericWorkflowResult(name, result, expanded, theme);
+  return renderGenericWorkflowResult(name, result, expanded, theme, usage);
 }
 
-function renderAdvisoryResult(name: string, result: AdvisoryWorkflowResult, expanded: boolean, theme: Theme): string {
+function renderAdvisoryResult(name: string, result: AdvisoryWorkflowResult, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
   const icon = theme.fg("success", "✓");
   const title = theme.fg("accent", theme.bold(`Workflow: ${name}`));
   const lines = [`${icon} ${title}`, theme.fg("muted", result.summary)];
   const stats = statsLine(result.stats, theme);
   if (stats) lines.push(stats);
+  const usageLine = formatWorkflowUsageLine(usage);
+  if (usageLine) lines.push(theme.fg("dim", usageLine));
 
   if (result.findings.length === 0) {
     lines.push(theme.fg("success", "No findings."));
@@ -104,10 +108,12 @@ function renderNextSteps(nextSteps: string[], lines: string[], theme: Theme): vo
   }
 }
 
-function renderGenericWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme): string {
+function renderGenericWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
   const lines = [`${theme.fg("success", "✓")} ${theme.fg("accent", theme.bold(`Workflow: ${name}`))}`];
   const summary = extractSummary(result);
   if (summary) lines.push(theme.fg("muted", summary));
+  const usageLine = formatWorkflowUsageLine(usage);
+  if (usageLine) lines.push(theme.fg("dim", usageLine));
   if (expanded) lines.push(theme.fg("dim", safeJson(result)));
   else if (!summary) lines.push(theme.fg("dim", "Result available in expanded view."));
   return lines.join("\n");
