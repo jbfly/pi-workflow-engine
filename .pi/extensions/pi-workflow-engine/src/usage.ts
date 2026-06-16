@@ -87,12 +87,19 @@ export function emptyWorkflowUsageTotals(): WorkflowUsageTotals {
   return cloneTotals(ZERO_TOTALS);
 }
 
-export function hasWorkflowUsage(snapshot: WorkflowUsageSnapshot | undefined): snapshot is WorkflowUsageSnapshot {
-  if (!snapshot) return false;
+export function isWorkflowUsageSnapshot(value: unknown): value is WorkflowUsageSnapshot {
+  if (!isRecord(value)) return false;
+  if (!Array.isArray(value.agents) || !value.agents.every(isWorkflowAgentUsage)) return false;
+  if (!isWorkflowUsageTotals(value.totals)) return false;
+  return finiteNumber(value.assistantMessages) !== undefined;
+}
+
+export function hasWorkflowUsage(snapshot: unknown): snapshot is WorkflowUsageSnapshot {
+  if (!isWorkflowUsageSnapshot(snapshot)) return false;
   return snapshot.assistantMessages > 0 || snapshot.totals.totalTokens > 0 || snapshot.totals.cost.total > 0;
 }
 
-export function formatWorkflowUsageLine(snapshot: WorkflowUsageSnapshot | undefined): string | undefined {
+export function formatWorkflowUsageLine(snapshot: unknown): string | undefined {
   if (!hasWorkflowUsage(snapshot)) return undefined;
   const parts = [`↑${formatUsageCount(snapshot.totals.input)}`, `↓${formatUsageCount(snapshot.totals.output)}`];
   if (snapshot.totals.cacheRead > 0) parts.push(`R${formatUsageCount(snapshot.totals.cacheRead)}`);
@@ -100,6 +107,37 @@ export function formatWorkflowUsageLine(snapshot: WorkflowUsageSnapshot | undefi
   parts.push(`cost $${snapshot.totals.cost.total.toFixed(3)}`);
   parts.push(`agents ${snapshot.agents.length}`);
   return `Usage: ${parts.join(" · ")}`;
+}
+
+function isWorkflowAgentUsage(value: unknown): value is WorkflowAgentUsage {
+  if (!isRecord(value)) return false;
+  if (typeof value.label !== "string") return false;
+  if (value.phase !== undefined && typeof value.phase !== "string") return false;
+  if (value.provider !== undefined && typeof value.provider !== "string") return false;
+  if (value.model !== undefined && typeof value.model !== "string") return false;
+  if (finiteNumber(value.assistantMessages) === undefined) return false;
+  return isWorkflowUsageTotals(value.usage);
+}
+
+function isWorkflowUsageTotals(value: unknown): value is WorkflowUsageTotals {
+  if (!isRecord(value)) return false;
+  if (finiteNumber(value.input) === undefined) return false;
+  if (finiteNumber(value.output) === undefined) return false;
+  if (finiteNumber(value.cacheRead) === undefined) return false;
+  if (finiteNumber(value.cacheWrite) === undefined) return false;
+  if (finiteNumber(value.totalTokens) === undefined) return false;
+  return isWorkflowUsageCost(value.cost);
+}
+
+function isWorkflowUsageCost(value: unknown): value is WorkflowUsageCost {
+  if (!isRecord(value)) return false;
+  return (
+    finiteNumber(value.input) !== undefined &&
+    finiteNumber(value.output) !== undefined &&
+    finiteNumber(value.cacheRead) !== undefined &&
+    finiteNumber(value.cacheWrite) !== undefined &&
+    finiteNumber(value.total) !== undefined
+  );
 }
 
 function parseAssistantUsageMessage(message: unknown): AssistantUsageMessage | undefined {

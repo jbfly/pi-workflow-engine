@@ -115,6 +115,12 @@ test("WorkflowUsageRecorder empty input returns zero totals and no agents", () =
   assert.equal(formatWorkflowUsageLine(snapshot), undefined);
 });
 
+test("formatWorkflowUsageLine ignores malformed snapshots", () => {
+  assert.equal(formatWorkflowUsageLine({}), undefined);
+  assert.equal(formatWorkflowUsageLine({ agents: [], assistantMessages: 1 }), undefined);
+  assert.equal(formatWorkflowUsageLine({ agents: [], totals: {}, assistantMessages: 1 }), undefined);
+});
+
 test("formatWorkflowUsageLine includes tokens cost and agent count", () => {
   const recorder = createWorkflowUsageRecorder();
   recorder.recordAgentSession({

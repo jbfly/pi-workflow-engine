@@ -61,20 +61,20 @@ export function isAdvisoryReport(value: unknown): value is AdvisoryWorkflowResul
   return true;
 }
 
-export function renderWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): Component {
+export function renderWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: unknown): Component {
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
   box.addChild(new Text(renderWorkflowResultText(name, result, expanded, theme, usage), 0, 0));
   return box;
 }
 
-export function renderWorkflowResultText(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
+export function renderWorkflowResultText(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: unknown): string {
   if (isAdvisoryReport(result)) {
     return renderAdvisoryResult(name, result, expanded, theme, usage);
   }
   return renderGenericWorkflowResult(name, result, expanded, theme, usage);
 }
 
-function renderAdvisoryResult(name: string, result: AdvisoryWorkflowResult, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
+function renderAdvisoryResult(name: string, result: AdvisoryWorkflowResult, expanded: boolean, theme: Theme, usage?: unknown): string {
   const icon = theme.fg("success", "✓");
   const title = theme.fg("accent", theme.bold(`Workflow: ${name}`));
   const lines = [`${icon} ${title}`, theme.fg("muted", result.summary)];
@@ -108,7 +108,7 @@ function renderNextSteps(nextSteps: string[], lines: string[], theme: Theme): vo
   }
 }
 
-function renderGenericWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: WorkflowUsageSnapshot): string {
+function renderGenericWorkflowResult(name: string, result: unknown, expanded: boolean, theme: Theme, usage?: unknown): string {
   const lines = [`${theme.fg("success", "✓")} ${theme.fg("accent", theme.bold(`Workflow: ${name}`))}`];
   const summary = extractSummary(result);
   if (summary) lines.push(theme.fg("muted", summary));

@@ -217,6 +217,15 @@ test("workflow result text renders usage summaries", () => {
   assert.match(advisory, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
 });
 
+test("workflow result text ignores malformed usage details", () => {
+  const theme = createTestTheme();
+
+  const rendered = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, {});
+
+  assert.match(rendered, /Done/);
+  assert.doesNotMatch(rendered, /Usage:/);
+});
+
 test("workflow result text renders advisory reports collapsed and expanded", () => {
   const theme = createTestTheme();
 
