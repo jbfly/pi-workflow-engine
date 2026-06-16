@@ -3,6 +3,7 @@ import { test } from "bun:test";
 import { runWorkflowWithContext, type WorkflowContextOptions, type WorkflowProgress } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
+import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
@@ -48,6 +49,7 @@ function createRc(progress: CaptureProgress, semaphore: Semaphore, createSession
     progress,
     signal: undefined,
     perf: new PerfRecorder(),
+    usage: createWorkflowUsageRecorder(),
     createSession,
   };
 }

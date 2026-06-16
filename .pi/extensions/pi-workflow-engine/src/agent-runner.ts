@@ -4,6 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
+import type { WorkflowUsageSink } from "./usage.ts";
 import { throwIfAborted } from "./cancellation.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
@@ -42,6 +43,7 @@ export interface RunContext {
   progress: AgentProgress;
   signal: AbortSignal | undefined;
   perf: PerfSink;
+  usage: WorkflowUsageSink;
   createSession?: CreateAgentSession;
 }
 
@@ -124,7 +126,13 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         let captured: unknown = null;
         let failed = false;
         let session: AgentRunnerSession | undefined;
+        let usageRecorded = false;
         let unsubscribe: (() => void) | undefined;
+        const recordUsage = (activeSession: AgentRunnerSession): void => {
+          if (usageRecorded) return;
+          usageRecorded = true;
+          rc.usage.recordAgentSession({ label, phase, messages: activeSession.state.messages });
+        };
         const customTools: ToolDefinition[] = opts.schema
           ? [
               defineTool({
@@ -188,6 +196,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           } finally {
             unlinkPromptAbort();
           }
+          recordUsage(activeSession);
           throwIfAborted(rc.signal);
 
           return rc.perf.timeSync(
@@ -213,6 +222,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         } finally {
           const disposable = session;
           if (disposable) {
+            recordUsage(disposable);
             rc.perf.timeSync(
               "agent.dispose_ms",
               () => {

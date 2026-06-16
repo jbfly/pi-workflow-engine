@@ -4,6 +4,7 @@ import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext 
 import { WorkflowAbortError, throwIfAborted } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { parallel, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
+import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,6 +41,7 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     progress,
     signal,
     perf: new NoopPerfRecorder(),
+    usage: createWorkflowUsageRecorder(),
     createSession,
   };
 }
