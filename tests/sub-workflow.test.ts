@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import { runWorkflowWithContext, type WorkflowContextOptions, type WorkflowProgress } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
-import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
@@ -40,7 +40,12 @@ function createProgress(): CaptureProgress {
   };
 }
 
-function createRc(progress: CaptureProgress, semaphore: Semaphore, createSession?: CreateAgentSession): RunContext {
+function createRc(
+  progress: CaptureProgress,
+  semaphore: Semaphore,
+  createSession?: CreateAgentSession,
+  usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
+): RunContext {
   return {
     cwd: process.cwd(),
     hostModel: undefined,
@@ -49,7 +54,7 @@ function createRc(progress: CaptureProgress, semaphore: Semaphore, createSession
     progress,
     signal: undefined,
     perf: new PerfRecorder(),
-    usage: createWorkflowUsageRecorder(),
+    usage,
     createSession,
   };
 }
@@ -60,6 +65,21 @@ function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowM
 
 function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>): WorkflowContextOptions {
   return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
+}
+
+function usageMessage(input: number, output: number): unknown {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "ok" }],
+    usage: {
+      input,
+      output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: input + output,
+      cost: { input: input / 1000000, output: output / 1000000, cacheRead: 0, cacheWrite: 0, total: (input + output) / 1000000 },
+    },
+  };
 }
 
 const NOOP_SESSION: CreateAgentSession = async () => ({
@@ -213,6 +233,39 @@ test("child structured progress is namespaced while parent progress is not", asy
   assert.equal(laneEvent(progress.events, "reviewer ▸ Findings")?.type, "lane_item");
   assert.ok(progress.logs.includes("parent log"));
   assert.ok(progress.logs.includes("reviewer: child log"));
+});
+
+test("parent and sub-workflow agents share the run's usage recorder", async () => {
+  const usage = createWorkflowUsageRecorder();
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [usageMessage(10, 5)] },
+      prompt: async () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+      abort: async () => {},
+    },
+  });
+  const progress = createProgress();
+  const rc = createRc(progress, new Semaphore(2), createSession, usage);
+  const child = workflowModule("child", async (api) => api.agent("child", { label: "child-agent" }));
+  const parent = workflowModule("parent", async (api) => {
+    const parentResult = await api.agent("parent", { label: "parent-agent" });
+    const childResult = await api.workflow("child");
+    return `${parentResult}/${String(childResult)}`;
+  });
+
+  const result = await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
+
+  assert.equal(result, "ok/ok");
+  const snapshot = usage.snapshot();
+  assert.deepEqual(
+    snapshot.agents.map((agent) => agent.label).sort(),
+    ["child-agent", "parent-agent"],
+  );
+  assert.equal(snapshot.assistantMessages, 2);
+  assert.equal(snapshot.totals.input, 20);
+  assert.equal(snapshot.totals.output, 10);
 });
 
 test("parent and sub-workflow agents share the run's concurrency cap", async () => {
