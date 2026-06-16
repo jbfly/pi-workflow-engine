@@ -5,6 +5,7 @@ import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import { throwIfAborted } from "./cancellation.ts";
+import { createAgentLogger, modelDisplay } from "./agent-log.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -125,6 +126,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         let failed = false;
         let session: AgentRunnerSession | undefined;
         let unsubscribe: (() => void) | undefined;
+        let logger: ReturnType<typeof createAgentLogger> | undefined;
         const customTools: ToolDefinition[] = opts.schema
           ? [
               defineTool({
@@ -149,9 +151,26 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               : opts.tools
             : undefined;
 
-          // Resolve the model by runtime id lookup (no compile-time model-id union); fall back to the host's model.
-          const model = opts.model ? rc.modelRegistry.find("anthropic", opts.model) ?? rc.hostModel : rc.hostModel;
+          // Resolve the model: accept "provider/id" for any provider (e.g.
+          // "openai-codex/gpt-5.4-mini"), or a bare id (treated as anthropic for
+          // back-compat). Falls back to the host model when not found. [agent-harness patch]
+          let model = rc.hostModel;
+          if (opts.model) {
+            const slash = opts.model.indexOf("/");
+            const found =
+              slash > 0
+                ? rc.modelRegistry.find(opts.model.slice(0, slash), opts.model.slice(slash + 1))
+                : rc.modelRegistry.find("anthropic", opts.model);
+            model = found ?? rc.hostModel;
+          }
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
+
+          logger = createAgentLogger(rc, label, rowId);
+          try {
+            logger?.header(modelDisplay(model, opts.model), prompt);
+          } catch {
+            /* logging is best-effort */
+          }
 
           throwIfAborted(rc.signal);
           const created = await rc.perf.time(
@@ -176,6 +195,11 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
               rc.progress.agentTool(label, event.toolName, rowId);
             }
+            try {
+              logger?.append(activeSession.state.messages);
+            } catch {
+              /* best-effort */
+            }
           });
 
           const finalPrompt = opts.schema
@@ -190,7 +214,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           }
           throwIfAborted(rc.signal);
 
-          return rc.perf.timeSync(
+          const result = rc.perf.timeSync(
             "agent.extract_result_ms",
             () => {
               if (opts.schema) {
@@ -204,7 +228,19 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             },
             tags,
           );
+          try {
+            logger?.append(activeSession.state.messages);
+            logger?.finalize("done", typeof result === "string" ? result : JSON.stringify(result, null, 2));
+          } catch {
+            /* best-effort */
+          }
+          return result;
         } catch (error) {
+          try {
+            logger?.finalize("failed", error instanceof Error ? error.stack ?? error.message : String(error));
+          } catch {
+            /* best-effort */
+          }
           failed = true;
           failureHandled = true;
           rc.progress.agentFailed(label, error, rowId);
