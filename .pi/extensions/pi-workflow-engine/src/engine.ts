@@ -4,6 +4,7 @@ import { linkAbortSignal } from "./cancellation.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSnapshot } from "./perf.ts";
+import { createWorkflowUsageRecorder } from "./usage.ts";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
@@ -58,6 +59,7 @@ export async function runWorkflow(
   }
 
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
+  const usage = createWorkflowUsageRecorder();
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
@@ -69,6 +71,7 @@ export async function runWorkflow(
     progress,
     signal: runAbortController.signal,
     perf,
+    usage,
   };
 
   try {
@@ -84,6 +87,7 @@ export async function runWorkflow(
     );
   } finally {
     try {
+      resolvedOptions.onUsageSnapshot?.(usage.snapshot());
       const snapshot = perf.snapshot();
       if (resolvedOptions.perf) {
         resolvedOptions.onPerfSnapshot?.(snapshot);

@@ -5,6 +5,7 @@ import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts"
 import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
 function fakeContext(signal?: AbortSignal): ExtensionContext {
@@ -46,6 +47,25 @@ test("runWorkflow exposes a perf snapshot when perf is enabled", async () => {
   assert.equal(result, "ok");
   assert.equal(snapshot?.enabled, true);
   assert.ok(snapshot?.aggregates.some((aggregate) => aggregate.name === "workflow.total_ms"));
+});
+
+test("runWorkflow exposes a usage snapshot even when perf is disabled", async () => {
+  let snapshot: WorkflowUsageSnapshot | undefined;
+  const mod: WorkflowModule = {
+    meta: { name: "usage-snapshot-test", description: "usage snapshot" },
+    default: async () => "ok",
+  };
+
+  const result = await runWorkflow(fakeContext(), mod, "", {
+    onUsageSnapshot: (value) => {
+      snapshot = value;
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(snapshot?.assistantMessages, 0);
+  assert.equal(snapshot?.totals.totalTokens, 0);
+  assert.deepEqual(snapshot?.agents, []);
 });
 
 test("runWorkflow exposes a completed progress snapshot", async () => {

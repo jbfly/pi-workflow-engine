@@ -106,6 +106,19 @@ function createTuiContext(): { ctx: ExtensionContext; customCalls: () => number;
   return { ctx, customCalls: () => customCallCount, customRenders: () => customRenderLines };
 }
 
+function resultUsageAssistantMessages(value: unknown): unknown {
+  if (!isRecord(value)) return undefined;
+  const details = value.details;
+  if (!isRecord(details)) return undefined;
+  const usage = details.usage;
+  if (!isRecord(usage)) return undefined;
+  return usage.assistantMessages;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return;
@@ -194,8 +207,9 @@ export default async function run({ phase }) {
 }
 `;
 
-  await tool.execute("call-1", { script }, undefined, () => {}, HEADLESS_CTX);
+  const result = await tool.execute("call-1", { script }, undefined, () => {}, HEADLESS_CTX);
 
+  assert.equal(resultUsageAssistantMessages(result), 0);
   const inspection = getLastWorkflowInspection();
   assert.equal(inspection?.name, "inspect-probe");
   assert.ok(

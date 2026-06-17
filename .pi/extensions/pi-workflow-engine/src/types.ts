@@ -3,6 +3,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Pipeline } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
+import type { WorkflowUsageSnapshot } from "./usage.ts";
 
 /** A reference to a registered workflow by name. */
 export type WorkflowRef = string;
@@ -36,6 +37,8 @@ export interface WorkflowRunOptions {
   resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
   /** Called with the final performance snapshot when perf is enabled. */
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
+  /** Called with the final workflow subagent usage snapshot. */
+  onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void;
   /** Called with the live progress source while a workflow is running, then undefined when it ends. */
   onProgressSource?: (source: WorkflowProgressSource | undefined) => void;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */

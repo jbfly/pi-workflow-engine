@@ -7,6 +7,36 @@ import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-eng
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { isAdvisoryReport, renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
+import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+
+const usageSnapshot: WorkflowUsageSnapshot = {
+  agents: [
+    {
+      label: "finder",
+      phase: "Find",
+      provider: "anthropic",
+      model: "claude-test",
+      assistantMessages: 1,
+      usage: {
+        input: 12345,
+        output: 1800,
+        cacheRead: 40000,
+        cacheWrite: 5000,
+        totalTokens: 59145,
+        cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
+      },
+    },
+  ],
+  totals: {
+    input: 12345,
+    output: 1800,
+    cacheRead: 40000,
+    cacheWrite: 5000,
+    totalTokens: 59145,
+    cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
+  },
+  assistantMessages: 1,
+};
 
 test("workflow formatting helpers format durations, counts, agents, and truncation", () => {
   assert.equal(formatDuration(0), "0s");
@@ -175,6 +205,25 @@ test("generic workflow results stringify raw JSON only when expanded", () => {
   const expanded = renderWorkflowResultText("generic", large, true, theme);
   assert.match(expanded, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
   assert.match(expanded, /payload-99/);
+});
+
+test("workflow result text renders usage summaries", () => {
+  const theme = createTestTheme();
+
+  const generic = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, usageSnapshot);
+  assert.match(generic, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
+
+  const advisory = renderWorkflowResultText("refactor-scout", validReport, true, theme, usageSnapshot);
+  assert.match(advisory, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
+});
+
+test("workflow result text ignores malformed usage details", () => {
+  const theme = createTestTheme();
+
+  const rendered = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, {});
+
+  assert.match(rendered, /Done/);
+  assert.doesNotMatch(rendered, /Usage:/);
 });
 
 test("workflow result text renders advisory reports collapsed and expanded", () => {

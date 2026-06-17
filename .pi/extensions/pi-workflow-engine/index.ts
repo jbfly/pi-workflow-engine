@@ -6,6 +6,7 @@ import type { WorkflowProgressSnapshot } from "./src/progress.ts";
 import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
+import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
 import { registerDynamax } from "./src/dynamax.ts";
 import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
@@ -21,13 +22,15 @@ function summarize(result: unknown): string {
   return typeof result === "string" ? result : "Workflow finished.";
 }
 
-function formatMessageContent(name: string, result: unknown, perf?: WorkflowPerfDetails): string {
+function formatMessageContent(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): string {
+  const usageLine = formatWorkflowUsageLine(usage);
   const perfLine = formatPerfLine(perf);
-  return `## Workflow: ${name}\n\n${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}`;
+  const details = [usageLine, perfLine].filter((line): line is string => line !== undefined);
+  return `## Workflow: ${name}\n\n${summarize(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
-function workflowEnvelope(name: string, result: unknown, perf?: WorkflowPerfDetails): WorkflowResultEnvelope {
-  return { name, result, completedAt: Date.now(), perf };
+function workflowEnvelope(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): WorkflowResultEnvelope {
+  return { name, result, completedAt: Date.now(), usage, perf };
 }
 
 function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
@@ -297,6 +300,7 @@ export async function sendWorkflowResult(
 ): Promise<void> {
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
+  let usageSnapshot: WorkflowUsageSnapshot | undefined;
   let liveInspection: ActiveWorkflowInspection | undefined;
   const result = await runWorkflow(ctx, mod, args, {
     ...options,
@@ -317,6 +321,10 @@ export async function sendWorkflowResult(
       perfSnapshot = snapshot;
       options.onPerfSnapshot?.(snapshot);
     },
+    onUsageSnapshot(snapshot) {
+      usageSnapshot = snapshot;
+      options.onUsageSnapshot?.(snapshot);
+    },
     onProgressSnapshot(snapshot) {
       lastWorkflowInspection = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
       options.onProgressSnapshot?.(snapshot);
@@ -336,7 +344,7 @@ export async function sendWorkflowResult(
     await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
   }
   pi.sendMessage(
-    { customType: "workflow-result", content: formatMessageContent(name, result, perf), display: true, details: workflowEnvelope(name, result, perf) },
+    { customType: "workflow-result", content: formatMessageContent(name, result, usageSnapshot, perf), display: true, details: workflowEnvelope(name, result, usageSnapshot, perf) },
     { triggerTurn: false },
   );
 }
@@ -346,7 +354,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme);
+    if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
     return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
   });
 
@@ -428,7 +436,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
       const details = result.details;
-      if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme);
+      if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
       const first = result.content[0];
       const text = first?.type === "text" ? first.text : "Workflow finished.";
       return new Text(theme.fg("muted", text), 0, 0);
@@ -474,6 +482,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
       const { runWorkflow } = await loadEngine();
       let perfSnapshot: PerfSnapshot | undefined;
+      let usageSnapshot: WorkflowUsageSnapshot | undefined;
       let liveInspection: ActiveWorkflowInspection | undefined;
       const resultArgs = params.args ?? "";
       const result = await runWorkflow(ctx, mod, resultArgs, {
@@ -493,6 +502,9 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
         },
+        onUsageSnapshot: (snapshot) => {
+          usageSnapshot = snapshot;
+        },
         onProgressSnapshot: (snapshot) => {
           // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
           // previously uninspectable, unlike the /workflow command path.
@@ -500,8 +512,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
+      const usageLine = formatWorkflowUsageLine(usageSnapshot);
       const perfLine = formatPerfLine(perf);
-      return { content: [{ type: "text", text: `${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}` }], details: workflowEnvelope(resultName, result, perf) };
+      const detailLines = [usageLine, perfLine].filter((line): line is string => line !== undefined);
+      return { content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }], details: workflowEnvelope(resultName, result, usageSnapshot, perf) };
     },
   });
 }
