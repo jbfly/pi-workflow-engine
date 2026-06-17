@@ -146,6 +146,8 @@ Core primitives:
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
 
+Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
+
 ### Compose workflows
 
 `workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.

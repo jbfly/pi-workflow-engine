@@ -70,7 +70,10 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   label?: string;
   /** Phase to group this agent under in the progress tree. */
   phase?: string;
-  /** Model id (e.g. "claude-opus-4-5"); omit to inherit the host's current model. */
+  /**
+   * Optional model id. Omit to inherit the host model. Explicit refs are strict:
+   * bare ids resolve as Anthropic shorthand; use "provider/id" for other providers.
+   */
   model?: string;
   /** Reasoning effort for this agent. */
   thinkingLevel?: ThinkingLevel;

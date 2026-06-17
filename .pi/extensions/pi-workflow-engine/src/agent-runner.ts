@@ -47,6 +47,65 @@ export interface RunContext {
   createSession?: CreateAgentSession;
 }
 
+export interface ResolvedAgentModelRequest {
+  readonly ref: string;
+  readonly provider: string;
+  readonly id: string;
+}
+
+export interface ResolvedAgentModel {
+  readonly model: Model<Api> | undefined;
+  readonly requested: ResolvedAgentModelRequest | undefined;
+}
+
+function parseAgentModelRef(modelRef: string): ResolvedAgentModelRequest {
+  const normalized = modelRef.trim();
+  if (normalized.length === 0) {
+    throw new Error('Invalid agent model ref: expected a bare model id or "provider/id".');
+  }
+  if (normalized !== modelRef) {
+    throw new Error(`Invalid agent model ref "${modelRef}": remove leading or trailing whitespace.`);
+  }
+
+  const slash = modelRef.indexOf("/");
+  if (slash === -1) {
+    return { ref: modelRef, provider: "anthropic", id: modelRef };
+  }
+
+  const provider = modelRef.slice(0, slash);
+  const id = modelRef.slice(slash + 1);
+  if (provider.length === 0 || id.length === 0 || id.startsWith("/")) {
+    throw new Error(`Invalid agent model ref "${modelRef}": expected "provider/id".`);
+  }
+  return { ref: modelRef, provider, id };
+}
+
+/**
+ * Resolve a workflow agent model reference.
+ *
+ * Omitted refs inherit the host/session default model. Explicit refs are strict:
+ * bare model ids keep the original Anthropic shorthand for compatibility, and
+ * provider-qualified refs split only on the first slash so provider routers such
+ * as OpenRouter can use ids that contain additional slashes.
+ */
+export function resolveAgentModel(
+  modelRef: string | undefined,
+  modelRegistry: Pick<ModelRegistry, "find">,
+  hostModel: Model<Api> | undefined,
+): ResolvedAgentModel {
+  if (modelRef === undefined) {
+    return { model: hostModel, requested: undefined };
+  }
+
+  const parsed = parseAgentModelRef(modelRef);
+  const found = modelRegistry.find(parsed.provider, parsed.id);
+  if (!found) {
+    throw new Error(`Agent model "${modelRef}" not found (resolved as ${parsed.provider}/${parsed.id}).`);
+  }
+
+  return { model: found, requested: parsed };
+}
+
 /** Pull the last assistant message's plain text out of a finished session. */
 function lastAssistantText(state: { readonly messages: readonly unknown[] }): string {
   const messages = state.messages;
@@ -157,18 +216,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               : opts.tools
             : undefined;
 
-          // Resolve the model by runtime id lookup. Accept "provider/id" for any
-          // provider (e.g. "openai-codex/gpt-5.4-mini"); a bare id stays anthropic
-          // for back-compat. Fall back to the host's model when not found.
-          let model = rc.hostModel;
-          if (opts.model) {
-            const slash = opts.model.indexOf("/");
-            const found =
-              slash > 0
-                ? rc.modelRegistry.find(opts.model.slice(0, slash), opts.model.slice(slash + 1))
-                : rc.modelRegistry.find("anthropic", opts.model);
-            model = found ?? rc.hostModel;
-          }
+          const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
           throwIfAborted(rc.signal);
