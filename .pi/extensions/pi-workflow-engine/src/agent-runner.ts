@@ -157,8 +157,18 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               : opts.tools
             : undefined;
 
-          // Resolve the model by runtime id lookup (no compile-time model-id union); fall back to the host's model.
-          const model = opts.model ? rc.modelRegistry.find("anthropic", opts.model) ?? rc.hostModel : rc.hostModel;
+          // Resolve the model by runtime id lookup. Accept "provider/id" for any
+          // provider (e.g. "openai-codex/gpt-5.4-mini"); a bare id stays anthropic
+          // for back-compat. Fall back to the host's model when not found.
+          let model = rc.hostModel;
+          if (opts.model) {
+            const slash = opts.model.indexOf("/");
+            const found =
+              slash > 0
+                ? rc.modelRegistry.find(opts.model.slice(0, slash), opts.model.slice(slash + 1))
+                : rc.modelRegistry.find("anthropic", opts.model);
+            model = found ?? rc.hostModel;
+          }
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
           throwIfAborted(rc.signal);
