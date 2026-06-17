@@ -12,6 +12,18 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// ANSI colors — rendered when the log is tailed in a terminal. user=blue,
+// assistant=green, thinking=gray, tool call=cyan, result=dim.
+const A = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  bold: "\x1b[1m",
+  blue: "\x1b[34m",
+  green: "\x1b[32m",
+  cyan: "\x1b[36m",
+  gray: "\x1b[90m",
+};
+
 // One log dir per run. Keyed by the shared RunContext object so every agent in a
 // run lands in the same folder.
 const RUN_DIRS = new WeakMap<object, string>();
@@ -55,7 +67,7 @@ export function createAgentLogger(runKey: object, label: string, rowId: number):
     path: file,
     header(model, prompt) {
       write(
-        `# agent: ${label}\n# model: ${model}\n# started: ${new Date().toISOString()}\n\n` +
+        `# agent: ${label}\n${A.bold}${A.cyan}# model: ${model}${A.reset}\n# started: ${new Date().toISOString()}\n\n` +
           `## prompt\n${truncate(prompt, 4000)}\n\n## activity\n`,
       );
     },
@@ -93,14 +105,15 @@ function renderMessage(message: unknown): string {
     const p = part as Record<string, unknown>;
     const type = p.type;
     if (type === "text" && typeof p.text === "string" && p.text.trim()) {
-      out += `[${role}] ${p.text.trim()}\n`;
+      const c = role === "user" ? A.blue : A.green;
+      out += `${A.bold}${c}[${role}]${A.reset} ${p.text.trim()}\n`;
     } else if ((type === "thinking" || type === "reasoning") && typeof (p.text ?? p.thinking) === "string") {
-      out += `[${role}:thinking] ${truncate(String(p.text ?? p.thinking).trim(), 1500)}\n`;
+      out += `${A.gray}[${role}:thinking] ${truncate(String(p.text ?? p.thinking).trim(), 1500)}${A.reset}\n`;
     } else if (p.name || type === "tool_use" || type === "tool_call") {
       const input = p.input ?? p.args ?? p.arguments ?? p.parameters;
-      out += `  → tool ${String(p.name ?? p.tool ?? "?")}: ${oneLine(input)}\n`;
+      out += `  ${A.cyan}→ tool ${String(p.name ?? p.tool ?? "?")}${A.reset}${A.dim}: ${oneLine(input)}${A.reset}\n`;
     } else if (type === "tool_result" || type === "tool_use_result") {
-      out += `  ← result: ${oneLine(p.content ?? p.output ?? p.result)}\n`;
+      out += `  ${A.dim}← result: ${oneLine(p.content ?? p.output ?? p.result)}${A.reset}\n`;
     }
   }
   return out;
