@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
 import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
@@ -81,7 +81,81 @@ export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Pro
   return mod;
 }
 
-const AUTHOR_TEMP_WORKFLOW_CHOICE = "✍ Author temporary one-shot workflow…";
+const AUTHOR_TEMP_WORKFLOW_VALUE = "__author-temporary-workflow__";
+const AUTHOR_TEMP_WORKFLOW_LABEL = "Author temporary one-shot workflow";
+const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run an inline workflow.";
+const WORKFLOW_PICKER_MAX_VISIBLE = 8;
+const WORKFLOW_PICKER_LAYOUT = { minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 22 };
+
+class WorkflowPickerComponent implements Component {
+  private readonly list: SelectList;
+
+  constructor(
+    items: SelectItem[],
+    private readonly tui: TUI,
+    private readonly theme: Theme,
+    done: (value: string | undefined) => void,
+  ) {
+    this.list = new SelectList(items, Math.min(WORKFLOW_PICKER_MAX_VISIBLE, items.length), selectListTheme(theme), WORKFLOW_PICKER_LAYOUT);
+    this.list.onSelect = (item) => done(item.value);
+    this.list.onCancel = () => done(undefined);
+    this.list.onSelectionChange = () => this.tui.requestRender();
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(20, width);
+    const rule = this.theme.fg("borderMuted", "-".repeat(safeWidth));
+    const lines = [
+      rule,
+      this.theme.fg("accent", this.theme.bold("Run workflow")),
+      "",
+      ...this.list.render(safeWidth),
+      "",
+      this.theme.fg("muted", "up/down navigate  enter select  escape cancel"),
+      rule,
+    ];
+    return lines.map((line) => truncateToWidth(line, safeWidth));
+  }
+
+  handleInput(data: string): void {
+    this.list.handleInput(data);
+    this.tui.requestRender();
+  }
+
+  invalidate(): void {
+    this.list.invalidate();
+  }
+}
+
+function selectListTheme(theme: Theme): SelectListTheme {
+  return {
+    selectedPrefix: (text) => theme.fg("accent", text),
+    selectedText: (text) => theme.fg("accent", text),
+    description: (text) => theme.fg("muted", text),
+    scrollInfo: (text) => theme.fg("muted", text),
+    noMatch: (text) => theme.fg("muted", text),
+  };
+}
+
+function workflowPickerItems(workflows: ReadonlyMap<string, WorkflowModule>): SelectItem[] {
+  return [
+    { value: AUTHOR_TEMP_WORKFLOW_VALUE, label: AUTHOR_TEMP_WORKFLOW_LABEL, description: AUTHOR_TEMP_WORKFLOW_DESCRIPTION },
+    ...[...workflows.values()].map((mod) => ({ value: mod.meta.name, label: mod.meta.name, description: mod.meta.description })),
+  ];
+}
+
+async function selectWorkflowValue(workflows: ReadonlyMap<string, WorkflowModule>, ctx: ExtensionCommandContext): Promise<string | undefined> {
+  const items = workflowPickerItems(workflows);
+  if (typeof ctx.ui.custom === "function") {
+    return await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => new WorkflowPickerComponent(items, tui, theme, done));
+  }
+
+  const choice = await ctx.ui.select(
+    "Run workflow",
+    items.map((item) => item.label),
+  );
+  return items.find((item) => item.label === choice)?.value ?? choice;
+}
 
 export interface LastWorkflowInspection {
   readonly name: string;
@@ -269,11 +343,10 @@ export async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
 ): Promise<WorkflowInvocation | undefined> {
-  const choices = [AUTHOR_TEMP_WORKFLOW_CHOICE, ...[...workflows.values()].map((mod) => `${mod.meta.name} — ${mod.meta.description}`)];
-  const choice = await ctx.ui.select("Run workflow", choices);
+  const choice = await selectWorkflowValue(workflows, ctx);
   if (!choice) return undefined;
 
-  if (choice === AUTHOR_TEMP_WORKFLOW_CHOICE) {
+  if (choice === AUTHOR_TEMP_WORKFLOW_VALUE || choice === AUTHOR_TEMP_WORKFLOW_LABEL) {
     const brief = await ctx.ui.editor(
       "Describe temporary workflow",
       "Goal:\n\nAgents to run:\n- \n\nFinal output should include:\n- summary\n- findings\n- next steps\n",
