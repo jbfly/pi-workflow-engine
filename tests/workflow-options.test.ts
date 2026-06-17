@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
 
 test("defaultConcurrency preserves existing formula", () => {
   assert.equal(defaultConcurrency(1), 2);
@@ -87,6 +87,46 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
 
   assert.equal(confirmCalls, 0);
   assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
+});
+
+test("pickWorkflow uses custom picker values instead of long raw select rows", async () => {
+  let customCalls = 0;
+  const workflows = new Map<string, WorkflowModule>([
+    [
+      "refactor-scout",
+      {
+        meta: {
+          name: "refactor-scout",
+          description:
+            "Advisory-only refactor scout with a deliberately long description that would wrap in narrow terminal selectors.",
+        },
+        default: async () => "ok",
+      },
+    ],
+  ]);
+  const ctx = {
+    hasUI: true,
+    ui: {
+      async custom() {
+        customCalls++;
+        return "refactor-scout";
+      },
+      async select() {
+        throw new Error("raw select should not be used when custom picker is available");
+      },
+      async input() {
+        return "";
+      },
+      async editor() {
+        return "";
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+
+  const invocation = await pickWorkflow(workflows, ctx);
+
+  assert.equal(customCalls, 1);
+  assert.deepEqual(invocation, { name: "refactor-scout", args: "", options: {} });
 });
 
 test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {
