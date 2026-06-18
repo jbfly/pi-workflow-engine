@@ -6,6 +6,7 @@ import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
 import { throwIfAborted } from "./cancellation.ts";
+import { createAgentLogger, modelDisplay } from "./agent-log.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -187,6 +188,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         let session: AgentRunnerSession | undefined;
         let usageRecorded = false;
         let unsubscribe: (() => void) | undefined;
+        let logger: ReturnType<typeof createAgentLogger> | undefined; // [agent-harness] on-disk activity log (/wlogs)
         const recordUsage = (activeSession: AgentRunnerSession): void => {
           if (usageRecorded) return;
           usageRecorded = true;
@@ -217,6 +219,12 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             : undefined;
 
           const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
+          logger = createAgentLogger(rc, label, rowId); // [agent-harness] per-subagent activity log
+          try {
+            logger?.header(modelDisplay(model, opts.model), prompt);
+          } catch {
+            /* logging is best-effort */
+          }
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
           throwIfAborted(rc.signal);
@@ -257,7 +265,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           recordUsage(activeSession);
           throwIfAborted(rc.signal);
 
-          return rc.perf.timeSync(
+          const result = rc.perf.timeSync(
             "agent.extract_result_ms",
             () => {
               if (opts.schema) {
@@ -271,11 +279,23 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             },
             tags,
           );
+          try {
+            logger?.append(activeSession.state.messages); // [agent-harness]
+            logger?.finalize("done", typeof result === "string" ? result : JSON.stringify(result, null, 2));
+          } catch {
+            /* best-effort */
+          }
+          return result;
         } catch (error) {
           failed = true;
           failureHandled = true;
           rc.progress.agentFailed(label, error, rowId);
           rc.progress.log(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+          try {
+            logger?.finalize("failed", error instanceof Error ? (error.stack ?? error.message) : String(error)); // [agent-harness]
+          } catch {
+            /* best-effort */
+          }
           throw error;
         } finally {
           const disposable = session;
