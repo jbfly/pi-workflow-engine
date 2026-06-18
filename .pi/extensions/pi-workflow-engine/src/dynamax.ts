@@ -29,7 +29,8 @@ export const DYNAMAX_REMINDER = `
 The user has opted into dynamax multi-agent orchestration. The workflow tool is permitted for this task. You may either run an existing named workflow or author a new inline workflow script when that best serves the user's request.
 
 Inline workflow rules:
-- Use the injected Type object for schemas, for example Type.Object({ ok: Type.Boolean() }); do not import typebox.
+- The exported meta object MUST be a pure literal: export const meta = { name: "...", description: "...", phases: [{ title: "..." }] }. Inside meta use only string/array/object literals — NO Type.* schemas, function calls, variables, imports, or template interpolation. Putting Type.* (or anything non-literal) in meta fails to compile before any agent runs.
+- Use the injected Type object for schemas in the body, not in meta: e.g. const Result = Type.Object({ ok: Type.Boolean() }); then pass it as agent(prompt, { schema: Result }). Do not import typebox.
 - Do not use import statements or dynamic import() in inline workflow scripts.
 - Set thinkingLevel explicitly on each agent() call so fan-out remains bounded.
 - Provide exactly one of workflow.name or workflow.script.
